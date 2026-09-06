@@ -79,16 +79,26 @@ export async function uploadClip(
 ): Promise<RecognitionResult> {
   const name = fileUri.split("/").pop() || "clip.mp4";
   const type = opts.mimeType ?? (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4");
-  const form = new FormData();
-  // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
-  form.append("clip", { uri: fileUri, name, type });
-  const res = await fetch(`${baseUrl()}/sessions/${sessionId}/clips`, {
-    method: "POST",
-    headers: headers(),
-    body: form,
-    signal: opts.signal ?? null,
-  });
-  return parse<RecognitionResult>(res);
+  const send = async () => {
+    const form = new FormData();
+    // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
+    form.append("clip", { uri: fileUri, name, type });
+    const res = await fetch(`${baseUrl()}/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: headers(),
+      body: form,
+      signal: opts.signal ?? null,
+    });
+    return parse<RecognitionResult>(res);
+  };
+  try {
+    return await send();
+  } catch (err) {
+    // One retry for transient network drops; server-side errors are not retried.
+    if (err instanceof ApiError || opts.signal?.aborted) throw err;
+    await new Promise((r) => setTimeout(r, 800));
+    return send();
+  }
 }
 
 export async function endSession(sessionId: string): Promise<void> {

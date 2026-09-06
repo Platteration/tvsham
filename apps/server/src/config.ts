@@ -26,6 +26,8 @@ export const config = {
   maxClipSeconds: 60,
   /** Max upload size in bytes. */
   maxUploadBytes: 80 * 1024 * 1024,
+  /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
+  maxConcurrent: Math.max(1, Number(env("MAX_CONCURRENT", "3"))),
   /** Sessions idle longer than this are dropped. */
   sessionTtlMs: 15 * 60 * 1000,
   version: "0.1.0",

@@ -5,7 +5,12 @@ import type { CaptureSource, Identification, MediaKind } from "@tvsham/shared";
 import { config } from "./config.js";
 import type { ExtractedFrame } from "./media.js";
 
-const client = new Anthropic();
+let client = new Anthropic();
+
+/** Swap the SDK client out (tests inject a fake; a real key is never needed there). */
+export function setClientForTests(fake: Anthropic | null): void {
+  client = fake ?? new Anthropic();
+}
 
 /** Evidence accumulated over all the clips in one session. */
 export interface Evidence {

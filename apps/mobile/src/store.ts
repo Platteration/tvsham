@@ -32,6 +32,9 @@ export interface Settings {
 
 const SETTINGS_KEY = "tvsham.settings.v1";
 const LIBRARY_KEY = "tvsham.library.v1";
+const HISTORY_KEY = "tvsham.history.v1";
+/** How many recent identifications to keep around. */
+const HISTORY_LIMIT = 30;
 
 /** In development, guess the server is on the same machine as the Metro bundler. */
 function defaultServerUrl(): string {
@@ -43,6 +46,7 @@ function defaultServerUrl(): string {
 
 const settingsStore = createStore<Settings>({ serverUrl: defaultServerUrl(), token: "" });
 const libraryStore = createStore<SavedItem[]>([]);
+const historyStore = createStore<SavedItem[]>([]);
 const hydrated = createStore<boolean>(false);
 
 /** The most recent result, handed from the capture screen to the result screen. */
@@ -58,11 +62,13 @@ export function hydrate(): Promise<void> {
   if (hydrating) return hydrating;
   hydrating = (async () => {
     try {
-      const [s, l] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY]);
+      const [s, l, h] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY, HISTORY_KEY]);
       const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
       if (savedSettings) settingsStore.set((prev) => ({ ...prev, ...savedSettings }));
       const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
       if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
+      const savedHistory = h?.[1] ? (JSON.parse(h[1]) as SavedItem[]) : null;
+      if (Array.isArray(savedHistory)) historyStore.set(savedHistory);
     } catch (err) {
       console.warn("[store] failed to hydrate", err);
     } finally {
@@ -126,9 +132,44 @@ export async function setWatched(id: string, watched: boolean): Promise<void> {
   await persistLibrary();
 }
 
+/* --------------------------------- history --------------------------------- */
+
+export function useHistory(): SavedItem[] {
+  return useSyncExternalStore(historyStore.subscribe, historyStore.get, historyStore.get);
+}
+
+/** Every identification is remembered here (whether saved or not) so nothing is lost. */
+async function recordHistory(result: RecognitionResult, source: CaptureSource): Promise<void> {
+  if (!result.identification || result.identification.kind === "unknown") return;
+  const item: SavedItem = {
+    id: result.sessionId,
+    savedAt: new Date().toISOString(),
+    source,
+    identification: result.identification,
+    links: result.links,
+    watched: false,
+  };
+  historyStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)].slice(0, HISTORY_LIMIT));
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore.get()));
+}
+
+export async function clearHistory(): Promise<void> {
+  historyStore.set([]);
+  await AsyncStorage.removeItem(HISTORY_KEY);
+}
+
+/** Promote a history entry to the saved library. */
+export async function saveHistoryItem(item: SavedItem): Promise<void> {
+  libraryStore.set((prev) => [{ ...item, savedAt: new Date().toISOString() }, ...prev.filter((i) => i.id !== item.id)]);
+  await persistLibrary();
+}
+
 /* ------------------------------- last result ------------------------------- */
 
-export const setLastResult = lastResultStore.set;
+export function setLastResult(next: LastResult | null): void {
+  lastResultStore.set(next);
+  if (next) void recordHistory(next.result, next.source);
+}
 
 export function useLastResult(): LastResult | null {
   return useSyncExternalStore(lastResultStore.subscribe, lastResultStore.get, lastResultStore.get);

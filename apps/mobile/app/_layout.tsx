@@ -34,7 +34,7 @@ export default function RootLayout() {
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="result" options={{ title: "Result", presentation: "modal" }} />
-        <Stack.Screen name="library" options={{ title: "Saved for later" }} />
+        <Stack.Screen name="library" options={{ title: "Saved & recent" }} />
         <Stack.Screen name="settings" options={{ title: "Settings" }} />
       </Stack>
     </ThemeProvider>

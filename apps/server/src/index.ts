@@ -14,6 +14,7 @@ import {
   type RecognitionResult,
 } from "@tvsham/shared";
 import { config } from "./config.js";
+import { Limiter } from "./limiter.js";
 import { extractAudio, extractFrames, ffmpegBinary, probeDuration } from "./media.js";
 import { recognise } from "./recognize.js";
 import { resolveLinks } from "./resolve.js";
@@ -21,6 +22,7 @@ import { createSession, deleteSession, getSession, sweepSessions, type Session }
 import { sttProvider } from "./stt.js";
 
 const app = new Hono();
+const limiter = new Limiter(config.maxConcurrent);
 app.use("*", logger());
 app.use("*", cors());
 
@@ -81,8 +83,8 @@ app.post("/sessions/:id/clips", async (c) => {
   if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
   if (clip.size < 1024) return c.json({ error: "clip is empty" }, 400);
 
-  // Serialise per session: a second upload waits for the first to finish.
-  const work = s.busy.then(() => processClip(s, clip));
+  // Serialise per session (a second upload waits for the first) and cap global concurrency.
+  const work = s.busy.then(() => limiter.run(() => processClip(s, clip)));
   s.busy = work.catch(() => undefined);
   try {
     return c.json(await work);

@@ -67,6 +67,7 @@ Check it: `curl http://localhost:8787/health` →
 | `CLAUDE_MODEL` | `claude-opus-5` | Recognition model. |
 | `PORT` | `8787` | Listen port. |
 | `APP_TOKEN` | – | If set, the app must send it as a bearer token (enter it in Settings). |
+| `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
 | `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
 | `YOUTUBE_API_KEY` | – | Optional YouTube Data API v3 key for a proper search fallback. Without it, direct links are still verified via oEmbed. |
@@ -102,7 +103,7 @@ For device builds, `npx expo prebuild` then `npx expo run:ios` / `npx expo run:a
 
 ### Result and library
 
-The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed); the *Saved* screen lets you open, mark watched, or remove items.
+The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.
 
 ## Development
 
