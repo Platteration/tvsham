@@ -82,9 +82,14 @@ app.post("/sessions/:id/clips", async (c) => {
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
   if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
   if (clip.size < 1024) return c.json({ error: "clip is empty" }, 400);
+  const clipKey = typeof form["clipKey"] === "string" ? form["clipKey"] : undefined;
 
   // Serialise per session (a second upload waits for the first) and cap global concurrency.
-  const work = s.busy.then(() => limiter.run(() => processClip(s, clip)));
+  // A retried upload with a key we have already analysed just returns the current answer.
+  const work = s.busy.then(() => {
+    if (clipKey && s.seenClipKeys.has(clipKey)) return describe(s);
+    return limiter.run(() => processClip(s, clip, clipKey));
+  });
   s.busy = work.catch(() => undefined);
   try {
     return c.json(await work);
@@ -94,7 +99,7 @@ app.post("/sessions/:id/clips", async (c) => {
   }
 });
 
-async function processClip(s: Session, clip: File): Promise<RecognitionResult> {
+async function processClip(s: Session, clip: File, clipKey?: string): Promise<RecognitionResult> {
   const workDir = path.join(config.tmpDir, `${s.id}-${s.clips}`);
   await fs.mkdir(workDir, { recursive: true });
   const ext = path.extname(clip.name || "").toLowerCase() || ".mp4";
@@ -114,6 +119,7 @@ async function processClip(s: Session, clip: File): Promise<RecognitionResult> {
 
     const clipIndex = s.clips;
     s.clips += 1;
+    if (clipKey) s.seenClipKeys.add(clipKey);
     s.secondsAnalysed += looked;
     s.evidence.frames.push(...frames.map((f) => ({ ...f, clip: clipIndex })));
     s.evidence.transcripts.push(transcript ?? "");

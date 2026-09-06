@@ -9,6 +9,8 @@ export interface Session {
   touchedAt: number;
   evidence: Evidence;
   clips: number;
+  /** Client-supplied keys of clips already analysed, so a retried upload is not processed twice. */
+  seenClipKeys: Set<string>;
   secondsAnalysed: number;
   last?: { identification: Identification; links: ResolvedLink[] };
   /** Serialises clip processing so two uploads for one session never race. */
@@ -24,6 +26,7 @@ export function createSession(source: CaptureSource, hints?: string): Session {
     touchedAt: Date.now(),
     evidence: { source, frames: [], transcripts: [], ...(hints ? { hints } : {}) },
     clips: 0,
+    seenClipKeys: new Set(),
     secondsAnalysed: 0,
     busy: Promise.resolve(),
   };

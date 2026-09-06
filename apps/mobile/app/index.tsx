@@ -109,7 +109,8 @@ function CameraMode({ state, start, cancel }: ModeProps) {
   useEffect(() => {
     if (!busy) return;
     const sub = AppState.addEventListener("change", (next) => {
-      if (next !== "active") cancel();
+      // "inactive" is transient on iOS (notification banner, Control Center); only background ends it.
+      if (next === "background") cancel();
     });
     return () => sub.remove();
   }, [busy, cancel]);

@@ -73,7 +73,7 @@ export function useIdentify() {
           if (!uri) throw new Error("Recording produced no file.");
 
           setState({ phase: "uploading", clip, result: latest, error: null });
-          const upload = uploadClip(sessionId, uri);
+          const upload = uploadClip(sessionId, uri, { clipKey: `${sessionId}:${clip}` });
           // Keep listening while the server thinks.
           const hasNext = clip < maxClips;
           recording = hasNext ? producer.record() : Promise.resolve(null);

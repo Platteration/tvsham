@@ -107,9 +107,9 @@ export function isSaved(result: RecognitionResult): boolean {
   return libraryStore.get().some((i) => i.id === result.sessionId);
 }
 
-export async function saveResult(result: RecognitionResult, source: CaptureSource): Promise<SavedItem | null> {
+function toSavedItem(result: RecognitionResult, source: CaptureSource): SavedItem | null {
   if (!result.identification) return null;
-  const item: SavedItem = {
+  return {
     id: result.sessionId,
     savedAt: new Date().toISOString(),
     source,
@@ -117,6 +117,11 @@ export async function saveResult(result: RecognitionResult, source: CaptureSourc
     links: result.links,
     watched: false,
   };
+}
+
+export async function saveResult(result: RecognitionResult, source: CaptureSource): Promise<SavedItem | null> {
+  const item = toSavedItem(result, source);
+  if (!item) return null;
   libraryStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
   await persistLibrary();
   return item;
@@ -140,15 +145,8 @@ export function useHistory(): SavedItem[] {
 
 /** Every identification is remembered here (whether saved or not) so nothing is lost. */
 async function recordHistory(result: RecognitionResult, source: CaptureSource): Promise<void> {
-  if (!result.identification || result.identification.kind === "unknown") return;
-  const item: SavedItem = {
-    id: result.sessionId,
-    savedAt: new Date().toISOString(),
-    source,
-    identification: result.identification,
-    links: result.links,
-    watched: false,
-  };
+  const item = toSavedItem(result, source);
+  if (!item || item.identification.kind === "unknown") return;
   historyStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)].slice(0, HISTORY_LIMIT));
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore.get()));
 }

@@ -75,7 +75,7 @@ export async function createSession(source: CaptureSource): Promise<string> {
 export async function uploadClip(
   sessionId: string,
   fileUri: string,
-  opts: { mimeType?: string; signal?: AbortSignal } = {},
+  opts: { mimeType?: string; signal?: AbortSignal; clipKey?: string } = {},
 ): Promise<RecognitionResult> {
   const name = fileUri.split("/").pop() || "clip.mp4";
   const type = opts.mimeType ?? (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4");
@@ -83,6 +83,8 @@ export async function uploadClip(
     const form = new FormData();
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
     form.append("clip", { uri: fileUri, name, type });
+    // Lets the server ignore a duplicate if the retry below re-sends a clip it already got.
+    form.append("clipKey", opts.clipKey ?? fileUri);
     const res = await fetch(`${baseUrl()}/sessions/${sessionId}/clips`, {
       method: "POST",
       headers: headers(),

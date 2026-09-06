@@ -5,6 +5,11 @@ function env(name: string, fallback?: string): string | undefined {
   return v === undefined || v === "" ? fallback : v;
 }
 
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
 export const config = {
   port: Number(env("PORT", "8787")),
   appToken: env("APP_TOKEN"),
@@ -27,7 +32,7 @@ export const config = {
   /** Max upload size in bytes. */
   maxUploadBytes: 80 * 1024 * 1024,
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
-  maxConcurrent: Math.max(1, Number(env("MAX_CONCURRENT", "3"))),
+  maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
   /** Sessions idle longer than this are dropped. */
   sessionTtlMs: 15 * 60 * 1000,
   version: "0.1.0",
