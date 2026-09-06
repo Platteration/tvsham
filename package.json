@@ -1,0 +1,19 @@
+{
+  "name": "tvsham",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shazam for video: point your phone at a TV or share a screen recording, get the Wikipedia article or YouTube link.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "server": "npm run dev --workspace apps/server",
+    "mobile": "npm run start --workspace apps/mobile",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

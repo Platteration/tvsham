@@ -1,0 +1,135 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
+import { useSyncExternalStore } from "react";
+import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
+
+/* ----------------------------- tiny store core ---------------------------- */
+
+type Listener = () => void;
+
+function createStore<T>(initial: T) {
+  let state = initial;
+  const listeners = new Set<Listener>();
+  return {
+    get: () => state,
+    set(next: T | ((prev: T) => T)) {
+      state = typeof next === "function" ? (next as (prev: T) => T)(state) : next;
+      for (const l of listeners) l();
+    },
+    subscribe(l: Listener) {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+  };
+}
+
+/* --------------------------------- settings -------------------------------- */
+
+export interface Settings {
+  serverUrl: string;
+  token: string;
+}
+
+const SETTINGS_KEY = "tvsham.settings.v1";
+const LIBRARY_KEY = "tvsham.library.v1";
+
+/** In development, guess the server is on the same machine as the Metro bundler. */
+function defaultServerUrl(): string {
+  const configured = (Constants.expoConfig?.extra as { serverUrl?: string } | undefined)?.serverUrl;
+  if (configured) return configured;
+  const host = Constants.expoConfig?.hostUri?.split(":")[0];
+  return host ? `http://${host}:8787` : "";
+}
+
+const settingsStore = createStore<Settings>({ serverUrl: defaultServerUrl(), token: "" });
+const libraryStore = createStore<SavedItem[]>([]);
+const hydrated = createStore<boolean>(false);
+
+/** The most recent result, handed from the capture screen to the result screen. */
+export interface LastResult {
+  result: RecognitionResult;
+  source: CaptureSource;
+}
+const lastResultStore = createStore<LastResult | null>(null);
+
+let hydrating: Promise<void> | null = null;
+
+export function hydrate(): Promise<void> {
+  if (hydrating) return hydrating;
+  hydrating = (async () => {
+    try {
+      const [s, l] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY]);
+      const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
+      if (savedSettings) settingsStore.set((prev) => ({ ...prev, ...savedSettings }));
+      const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
+      if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
+    } catch (err) {
+      console.warn("[store] failed to hydrate", err);
+    } finally {
+      hydrated.set(true);
+    }
+  })();
+  return hydrating;
+}
+
+export const getSettings = settingsStore.get;
+
+export function useSettings(): Settings {
+  return useSyncExternalStore(settingsStore.subscribe, settingsStore.get, settingsStore.get);
+}
+
+export async function updateSettings(patch: Partial<Settings>): Promise<void> {
+  settingsStore.set((prev) => ({ ...prev, ...patch }));
+  await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settingsStore.get()));
+}
+
+export function useHydrated(): boolean {
+  return useSyncExternalStore(hydrated.subscribe, hydrated.get, hydrated.get);
+}
+
+/* --------------------------------- library --------------------------------- */
+
+export function useLibrary(): SavedItem[] {
+  return useSyncExternalStore(libraryStore.subscribe, libraryStore.get, libraryStore.get);
+}
+
+async function persistLibrary(): Promise<void> {
+  await AsyncStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryStore.get()));
+}
+
+export function isSaved(result: RecognitionResult): boolean {
+  return libraryStore.get().some((i) => i.id === result.sessionId);
+}
+
+export async function saveResult(result: RecognitionResult, source: CaptureSource): Promise<SavedItem | null> {
+  if (!result.identification) return null;
+  const item: SavedItem = {
+    id: result.sessionId,
+    savedAt: new Date().toISOString(),
+    source,
+    identification: result.identification,
+    links: result.links,
+    watched: false,
+  };
+  libraryStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
+  await persistLibrary();
+  return item;
+}
+
+export async function removeSaved(id: string): Promise<void> {
+  libraryStore.set((prev) => prev.filter((i) => i.id !== id));
+  await persistLibrary();
+}
+
+export async function setWatched(id: string, watched: boolean): Promise<void> {
+  libraryStore.set((prev) => prev.map((i) => (i.id === id ? { ...i, watched } : i)));
+  await persistLibrary();
+}
+
+/* ------------------------------- last result ------------------------------- */
+
+export const setLastResult = lastResultStore.set;
+
+export function useLastResult(): LastResult | null {
+  return useSyncExternalStore(lastResultStore.subscribe, lastResultStore.get, lastResultStore.get);
+}

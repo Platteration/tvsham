@@ -1,0 +1,18 @@
+FROM node:22-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json* ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/server/package.json apps/server/
+RUN npm ci --workspace apps/server --include-workspace-root --omit=dev --ignore-scripts || npm install --workspace apps/server --omit=dev --ignore-scripts
+COPY packages/shared packages/shared
+COPY apps/server apps/server
+RUN npm install --workspace apps/server --include=dev --no-audit --no-fund && npm run build --workspace apps/server
+
+FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+ENV NODE_ENV=production PORT=8787 TMP_DIR=/tmp/tvsham
+WORKDIR /app
+COPY --from=build /app /app
+EXPOSE 8787
+CMD ["node", "apps/server/dist/index.js"]
