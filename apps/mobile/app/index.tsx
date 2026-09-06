@@ -4,7 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useKeepAwake } from "expo-keep-awake";
 import { Link, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, type CaptureSource } from "@tvsham/shared";
 import { colors, radius, space } from "@/theme";
@@ -104,6 +104,15 @@ function CameraMode({ state, start, cancel }: ModeProps) {
   useKeepAwake();
 
   const granted = camPerm?.granted && micPerm?.granted;
+
+  // Leaving the app mid-session ends the recording; the camera can't record in the background.
+  useEffect(() => {
+    if (!busy) return;
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next !== "active") cancel();
+    });
+    return () => sub.remove();
+  }, [busy, cancel]);
 
   const requestAll = useCallback(async () => {
     if (!camPerm?.granted) await requestCam();

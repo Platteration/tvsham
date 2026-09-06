@@ -78,6 +78,8 @@ app.post("/sessions/:id/clips", async (c) => {
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
+  if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
+  if (clip.size < 1024) return c.json({ error: "clip is empty" }, 400);
 
   // Serialise per session: a second upload waits for the first to finish.
   const work = s.busy.then(() => processClip(s, clip));
@@ -86,7 +88,7 @@ app.post("/sessions/:id/clips", async (c) => {
     return c.json(await work);
   } catch (err) {
     console.error("[clip]", err);
-    return c.json({ ...describe(s), status: "failed", message: errorMessage(err) }, 500);
+    return c.json({ ...describe(s), status: "failed", wantsMore: false, message: errorMessage(err) }, 500);
   }
 });
 

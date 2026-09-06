@@ -48,7 +48,7 @@ CONFIDENCE: <0.0-1.0>
 EVIDENCE: <one or two sentences>
 ALTERNATIVES: <"title (kind, year); title (kind, year)" or none>`;
 
-const IdentificationSchema = z.object({
+export const IdentificationSchema = z.object({
   kind: z.enum(["movie", "tv_episode", "tv_show", "youtube", "short_form", "other", "unknown"]),
   title: z.string(),
   year: z.number().nullable(),
@@ -182,7 +182,7 @@ export async function recognise(ev: Evidence): Promise<Identification> {
   return toIdentification(out);
 }
 
-function toIdentification(o: z.infer<typeof IdentificationSchema>): Identification {
+export function toIdentification(o: z.infer<typeof IdentificationSchema>): Identification {
   const id: Identification = {
     kind: o.kind as MediaKind,
     title: o.title || "Unknown",

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck (shared, server, mobile)
+        run: npm run typecheck
+      - name: Server tests
+        run: npm test --workspace apps/server
+      - name: Bundle the app with Metro
+        run: npx expo export --platform android --output-dir /tmp/export
+        working-directory: apps/mobile
+        env:
+          CI: "1"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build server image
+        run: docker build -f apps/server/Dockerfile -t tvsham-server .

@@ -1,0 +1,44 @@
+# TVsham – notes for Claude Code
+
+"Shazam for video": an Expo app records a few seconds of a TV (camera) or takes a screen
+recording, a Node server extracts frames + audio with ffmpeg, Claude identifies the
+content with web search, and the server returns verified Wikipedia / YouTube links.
+
+## Layout
+
+- `apps/mobile` – Expo SDK 57, expo-router. Screens in `app/`, logic in `src/`
+  (`useIdentify.ts` is the record → upload → repeat loop; `store.ts` holds settings and the
+  saved library; `api.ts` talks to the server). Path alias `@/` → `src/`.
+- `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
+  Claude, `resolve.ts` Wikipedia/YouTube, `stt.ts` optional speech-to-text, `sessions.ts`
+  in-memory session store.
+- `packages/shared` – types and tuning constants used by both sides.
+
+## Commands
+
+```bash
+npm install
+npm run typecheck                  # every workspace
+npm test --workspace apps/server   # node:test; needs no network or API key
+npm run server                     # tsx watch, port 8787
+npm run mobile                     # expo start
+cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
+```
+
+## Conventions
+
+- Keep server responses in the shapes from `packages/shared`; the app only renders them.
+- Network access in the server goes through `http.ts` `getJson` so tests can stub it.
+- Claude is called via `@anthropic-ai/sdk` only (`recognize.ts`). Two calls per clip:
+  vision + web search reasoning, then a `messages.parse` structured extraction.
+- Uploaded clips live under `apps/server/tmp/<session>-<n>` and are deleted after analysis.
+- No test can hit the real API. Verify changes with typecheck, the unit tests, and
+  `npx expo export` for the app bundle.
+
+## Things that trip people up
+
+- iOS ignores `videoQuality` on `recordAsync` unless a `codec` is passed.
+- expo-router 57 vendors react-navigation; import `ThemeProvider`/`DarkTheme` from
+  `expo-router`, not `@react-navigation/native`.
+- `expo install` needs network to Expo's API; pin versions from
+  `node_modules/expo/bundledNativeModules.json` when offline.

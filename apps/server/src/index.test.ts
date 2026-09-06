@@ -42,6 +42,15 @@ describe("http", () => {
     assert.equal(res.status, 400);
   });
 
+  it("rejects an empty clip", async () => {
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const form = new FormData();
+    form.set("clip", new Blob([new Uint8Array(16)]), "clip.mp4");
+    const res = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: form });
+    assert.equal(res.status, 400);
+  });
+
   it("404s for unknown sessions", async () => {
     const form = new FormData();
     form.set("clip", new Blob([new Uint8Array(4)]), "clip.mp4");

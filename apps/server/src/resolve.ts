@@ -12,7 +12,7 @@ interface WikiSummary {
 }
 
 /** Look up a Wikipedia page by exact title, falling back to title search. */
-export async function wikipediaLink(title: string, lang = "en"): Promise<ResolvedLink | null> {
+export async function wikipediaLink(title: string, lang = config.wikipediaLang): Promise<ResolvedLink | null> {
   const base = `https://${lang}.wikipedia.org`;
   const tryTitle = async (t: string): Promise<ResolvedLink | null> => {
     const s = await getJson<WikiSummary>(
@@ -113,7 +113,7 @@ export function youtubeSearchLink(query: string): ResolvedLink {
 export function wikipediaSearchLink(query: string): ResolvedLink {
   return {
     provider: "wikipedia",
-    url: `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(query)}`,
+    url: `https://${config.wikipediaLang}.wikipedia.org/w/index.php?search=${encodeURIComponent(query)}`,
     title: `Search Wikipedia for “${query}”`,
     confidence: "search",
   };

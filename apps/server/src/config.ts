@@ -18,6 +18,8 @@ export const config = {
     model: env("STT_MODEL", "whisper-1")!,
   },
   youtubeApiKey: env("YOUTUBE_API_KEY"),
+  /** Wikipedia edition used for article lookups. */
+  wikipediaLang: env("WIKIPEDIA_LANG", "en")!,
   /** Frames sampled per clip. */
   framesPerClip: 6,
   /** Longest slice of a single upload we look at, in seconds. */
