@@ -13,6 +13,8 @@ FROM node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production PORT=8787 TMP_DIR=/tmp/tvsham
 WORKDIR /app
-COPY --from=build /app /app
+COPY --from=build --chown=node:node /app /app
+RUN mkdir -p /tmp/tvsham && chown node:node /tmp/tvsham
+USER node
 EXPOSE 8787
 CMD ["node", "apps/server/dist/index.js"]

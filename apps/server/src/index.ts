@@ -1,7 +1,9 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -26,13 +28,29 @@ const limiter = new Limiter(config.maxConcurrent);
 app.use("*", logger());
 app.use("*", cors());
 
+function tokenMatches(header: string, expected: string): boolean {
+  const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 // Optional bearer-token gate for everything except the health check.
 app.use("*", async (c, next) => {
   if (!config.appToken || c.req.path === "/health") return next();
-  const auth = c.req.header("authorization") ?? "";
-  if (auth === `Bearer ${config.appToken}`) return next();
+  if (tokenMatches(c.req.header("authorization") ?? "", config.appToken)) return next();
   return c.json({ error: "unauthorised" }, 401);
 });
+
+// Reject oversized bodies before they are buffered (the content-length check alone
+// can be sidestepped with chunked encoding).
+app.use(
+  "/sessions/:id/clips",
+  bodyLimit({
+    maxSize: config.maxUploadBytes,
+    onError: (c) => c.json({ error: "clip too large" }, 413),
+  }),
+);
 
 app.get("/health", async (c) => {
   const body: HealthResponse = {
@@ -74,9 +92,6 @@ app.post("/sessions/:id/clips", async (c) => {
   if (s.clips >= MAX_CLIPS_PER_SESSION) {
     return c.json({ ...describe(s), wantsMore: false, message: "Clip limit reached for this session." });
   }
-  const len = Number(c.req.header("content-length") ?? 0);
-  if (len > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
-
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
@@ -95,14 +110,14 @@ app.post("/sessions/:id/clips", async (c) => {
     return c.json(await work);
   } catch (err) {
     console.error("[clip]", err);
-    return c.json({ ...describe(s), status: "failed", wantsMore: false, message: errorMessage(err) }, 500);
+    return c.json({ ...describe(s), status: "failed", wantsMore: false, message: clientErrorMessage(err) }, 500);
   }
 });
 
 async function processClip(s: Session, clip: File, clipKey?: string): Promise<RecognitionResult> {
   const workDir = path.join(config.tmpDir, `${s.id}-${s.clips}`);
   await fs.mkdir(workDir, { recursive: true });
-  const ext = path.extname(clip.name || "").toLowerCase() || ".mp4";
+  const ext = safeExtension(clip.name);
   const clipPath = path.join(workDir, `clip${ext}`);
   try {
     await fs.writeFile(clipPath, Buffer.from(await clip.arrayBuffer()));
@@ -181,7 +196,17 @@ function describe(s: Session): RecognitionResult {
   };
 }
 
-function errorMessage(err: unknown): string {
+const ALLOWED_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".3gp"]);
+
+/** Only a known video extension from the upload name is used; anything else becomes .mp4. */
+export function safeExtension(name: string | undefined): string {
+  const ext = path.extname(name ?? "").toLowerCase();
+  return ALLOWED_EXTENSIONS.has(ext) ? ext : ".mp4";
+}
+
+/** Internal error details stay in the server log; clients get a generic message in production. */
+function clientErrorMessage(err: unknown): string {
+  if (process.env.NODE_ENV === "production") return "Recognition failed on the server. Check the server logs.";
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -190,6 +215,9 @@ async function main(): Promise<void> {
   setInterval(() => sweepSessions(), 60_000).unref();
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.warn("[server] ANTHROPIC_API_KEY is not set; recognition requests will fail until it is.");
+  }
+  if (!config.appToken) {
+    console.warn("[server] APP_TOKEN is not set: anyone who can reach this port can spend your API budget. Set it for anything beyond a private LAN.");
   }
   console.log(`[server] ffmpeg: ${(await ffmpegBinary()) ?? "NOT FOUND"}`);
   console.log(`[server] model: ${config.model}, stt: ${sttProvider().name}`);

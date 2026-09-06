@@ -59,6 +59,12 @@ Check it: `curl http://localhost:8787/health` →
 { "ok": true, "version": "0.1.0", "ffmpeg": true, "stt": "none", "model": "claude-opus-5" }
 ```
 
+### Deploying safely
+
+- Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
+- Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
+- Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
+
 ### Server configuration
 
 | Variable | Default | Purpose |

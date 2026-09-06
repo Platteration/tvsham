@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
-import { app } from "./index.js";
+import { app, safeExtension } from "./index.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -95,6 +95,25 @@ describe("http", () => {
       setClientForTests(null);
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("only keeps known video extensions from the upload name", () => {
+    assert.equal(safeExtension("clip.MOV"), ".mov");
+    assert.equal(safeExtension("clip.webm"), ".webm");
+    assert.equal(safeExtension("clip.exe"), ".mp4");
+    assert.equal(safeExtension("../../etc/passwd"), ".mp4");
+    assert.equal(safeExtension(undefined), ".mp4");
+  });
+
+  it("rejects an upload over the size cap before parsing it", async () => {
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const res = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { "content-type": "video/mp4", "content-length": String(500 * 1024 * 1024) },
+      body: new Blob([new Uint8Array(1024)]),
+    });
+    assert.equal(res.status, 413);
   });
 
   it("404s for unknown sessions", async () => {
