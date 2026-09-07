@@ -59,11 +59,11 @@ export async function health(timeoutMs = 6000): Promise<HealthResponse> {
   return parse<HealthResponse>(res);
 }
 
-export async function createSession(source: CaptureSource): Promise<string> {
+export async function createSession(source: CaptureSource, hints?: string): Promise<string> {
   const res = await fetch(`${baseUrl()}/sessions`, {
     method: "POST",
     headers: headers({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, ...(hints ? { hints } : {}) }),
   });
   return (await parse<CreateSessionResponse>(res)).sessionId;
 }

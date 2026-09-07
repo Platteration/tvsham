@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setFetchForTests } from "./http.js";
-import { resolveLinks, youtubeId, youtubeLinkFromUrl, wikipediaLink } from "./resolve.js";
+import { creatorProfileLink, platformVideoLink, resolveLinks, youtubeId, youtubeLinkFromUrl, wikipediaLink } from "./resolve.js";
 
 const pages: Record<string, unknown> = {
   "Ozymandias_(Breaking_Bad)": {
@@ -121,5 +121,82 @@ describe("resolvers", () => {
 
   it("returns nothing for unknown", async () => {
     assert.deepEqual(await resolveLinks({ kind: "unknown", title: "?", confidence: 0, evidence: "" }), []);
+  });
+});
+
+describe("platform links", () => {
+  beforeEach(() => setFetchForTests(fakeFetch as typeof fetch));
+  afterEach(() => setFetchForTests(null));
+
+  const short = {
+    kind: "short_form" as const,
+    title: "cat knocks over vase",
+    creator: "Cat Vids",
+    creatorHandle: "catvids",
+    confidence: 0.8,
+    evidence: "t",
+  };
+
+  it("links a TikTok to TikTok, not YouTube, and adds the creator profile", async () => {
+    const links = await resolveLinks({
+      ...short,
+      platform: "tiktok",
+      videoUrl: "https://www.tiktok.com/@catvids/video/7300000000000000000",
+    });
+    assert.equal(links[0]?.provider, "tiktok");
+    assert.equal(links[0]?.url, "https://www.tiktok.com/@catvids/video/7300000000000000000");
+    assert.equal(links[1]?.url, "https://www.tiktok.com/@catvids");
+    assert.ok(!links.some((l) => l.provider === "youtube"));
+  });
+
+  it("refuses a video URL whose host is not the claimed platform", async () => {
+    assert.equal(platformVideoLink({ ...short, platform: "tiktok", videoUrl: "https://tiktok.com.evil.test/x" }), null);
+    assert.equal(platformVideoLink({ ...short, platform: "tiktok", videoUrl: "http://www.tiktok.com/@a/video/1" }), null);
+    assert.equal(platformVideoLink({ ...short, platform: "tiktok", videoUrl: "not a url" }), null);
+    assert.ok(platformVideoLink({ ...short, platform: "tiktok", videoUrl: "https://vm.tiktok.com/ZM123/" }));
+  });
+
+  it("searches the right platform when there is no direct URL", async () => {
+    const links = await resolveLinks({ ...short, platform: "instagram", creatorHandle: undefined });
+    assert.equal(links[0]?.provider, "instagram");
+    assert.equal(links[0]?.confidence, "search");
+  });
+
+  it("only builds a profile link from a plausible handle", () => {
+    assert.equal(creatorProfileLink({ ...short, platform: "tiktok", creatorHandle: "a b/../c" }), null);
+    assert.equal(creatorProfileLink({ ...short, platform: "tiktok", creatorHandle: "x" }), null);
+    assert.equal(creatorProfileLink({ ...short, kind: "movie", platform: undefined }), null);
+    assert.equal(
+      creatorProfileLink({ ...short, kind: "youtube", platform: "youtube" })?.url,
+      "https://www.youtube.com/@catvids",
+    );
+  });
+
+  it("does not attach a trailer to a specific episode", async () => {
+    const links = await resolveLinks({
+      kind: "tv_episode",
+      title: "Breaking Bad",
+      episode: { season: 5, number: 14, title: "Ozymandias" },
+      confidence: 0.9,
+      evidence: "t",
+      wikipediaTitle: "Breaking Bad",
+      wikipediaEpisodeTitle: "Ozymandias (Breaking Bad)",
+    });
+    assert.ok(!links.some((l) => l.provider === "youtube"));
+  });
+
+  it("adds a trailer search for a film with no other video link", async () => {
+    const links = await resolveLinks({
+      kind: "movie",
+      title: "Inception",
+      year: 2010,
+      confidence: 0.9,
+      evidence: "t",
+      wikipediaTitle: "Inception (2010 film)",
+    });
+    assert.equal(links[0]?.provider, "wikipedia");
+    const trailer = links.find((l) => l.provider === "youtube");
+    assert.equal(trailer?.confidence, "search");
+    assert.match(trailer!.url, /Inception%202010%20trailer/);
   });
 });

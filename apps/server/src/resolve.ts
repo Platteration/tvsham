@@ -119,6 +119,100 @@ export function wikipediaSearchLink(query: string): ResolvedLink {
   };
 }
 
+/** Hosts we are willing to build a link to, mapped to how their URLs are shaped. */
+const PLATFORMS = {
+  tiktok: {
+    provider: "tiktok" as const,
+    label: "TikTok",
+    host: /(^|\.)tiktok\.com$/,
+    profile: (handle: string) => `https://www.tiktok.com/@${handle}`,
+    search: (q: string) => `https://www.tiktok.com/search?q=${encodeURIComponent(q)}`,
+  },
+  instagram: {
+    provider: "instagram" as const,
+    label: "Instagram",
+    host: /(^|\.)instagram\.com$/,
+    profile: (handle: string) => `https://www.instagram.com/${handle}/`,
+    search: (q: string) => `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(q)}`,
+  },
+} as const;
+
+type KnownPlatform = keyof typeof PLATFORMS;
+
+function isKnownPlatform(p: string | undefined): p is KnownPlatform {
+  return p === "tiktok" || p === "instagram";
+}
+
+/**
+ * Accept a platform URL only when its host really is that platform's, so a
+ * mis-attributed URL from the model cannot send the user somewhere unexpected.
+ */
+export function platformVideoLink(id: Identification): ResolvedLink | null {
+  if (!id.videoUrl || !isKnownPlatform(id.platform)) return null;
+  const spec = PLATFORMS[id.platform];
+  let host: string;
+  try {
+    const u = new URL(id.videoUrl);
+    if (u.protocol !== "https:") return null;
+    host = u.hostname;
+  } catch {
+    return null;
+  }
+  if (!spec.host.test(host)) return null;
+  const link: ResolvedLink = {
+    provider: spec.provider,
+    url: id.videoUrl,
+    title: id.title,
+    confidence: "unverified",
+  };
+  if (id.creator) link.description = id.creator;
+  return link;
+}
+
+/** A link to the creator's own page on the platform the video came from. */
+export function creatorProfileLink(id: Identification): ResolvedLink | null {
+  const handle = id.creatorHandle?.replace(/^@/, "").trim();
+  if (!handle || !/^[A-Za-z0-9._-]{2,50}$/.test(handle)) return null;
+  if (isKnownPlatform(id.platform)) {
+    const spec = PLATFORMS[id.platform];
+    return {
+      provider: spec.provider,
+      url: spec.profile(handle),
+      title: `@${handle} on ${spec.label}`,
+      confidence: "unverified",
+      ...(id.creator ? { description: id.creator } : {}),
+    };
+  }
+  if (id.platform === "youtube" || id.kind === "youtube") {
+    return {
+      provider: "youtube",
+      url: `https://www.youtube.com/@${handle}`,
+      title: `@${handle} on YouTube`,
+      confidence: "unverified",
+      ...(id.creator ? { description: id.creator } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * A trailer for a film or show. With a YouTube key this is a real search hit;
+ * without one it is a YouTube search URL, which still lands the user in the right place.
+ * Episodes are left out: someone mid-episode wants the article, not a series trailer.
+ */
+export async function trailerLink(id: Identification): Promise<ResolvedLink | null> {
+  if (id.kind !== "movie" && id.kind !== "tv_show") return null;
+  const query = [id.title, id.year, "trailer"].filter(Boolean).join(" ");
+  const hit = await youtubeSearch(query);
+  if (hit) return { ...hit, title: `Trailer: ${hit.title}` };
+  return {
+    provider: "youtube",
+    url: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+    title: `Trailer for ${id.title}`,
+    confidence: "search",
+  };
+}
+
 function episodeLabel(id: Identification): string {
   const e = id.episode;
   if (!e) return "";
@@ -140,15 +234,24 @@ export async function resolveLinks(id: Identification): Promise<ResolvedLink[]> 
   const isVideoPlatform = id.kind === "youtube" || id.kind === "short_form";
 
   if (isVideoPlatform) {
-    if (id.youtubeUrl) {
+    // A TikTok or Reel belongs on its own platform; only fall back to YouTube for the rest.
+    const native = platformVideoLink(id);
+    if (native) links.push(native);
+    if (links.length === 0 && id.youtubeUrl) {
       const v = await youtubeLinkFromUrl(id.youtubeUrl);
       if (v) links.push(v);
     }
     if (links.length === 0) {
       const q = [id.title, id.creator].filter(Boolean).join(" ");
-      const s = await youtubeSearch(q);
-      links.push(s ?? youtubeSearchLink(q));
+      if (isKnownPlatform(id.platform)) {
+        const spec = PLATFORMS[id.platform];
+        links.push({ provider: spec.provider, url: spec.search(q), title: `Search ${spec.label} for “${q}”`, confidence: "search" });
+      } else {
+        links.push((await youtubeSearch(q)) ?? youtubeSearchLink(q));
+      }
     }
+    const profile = creatorProfileLink(id);
+    if (profile) links.push(profile);
     // Creators often have a Wikipedia article even when the video does not.
     if (id.wikipediaTitle) {
       const w = await wikipediaLink(id.wikipediaTitle);
@@ -185,10 +288,14 @@ export async function resolveLinks(id: Identification): Promise<ResolvedLink[]> 
     links.push(wikipediaSearchLink([id.title, episodeLabel(id)].filter(Boolean).join(" ")));
   }
 
-  // Trailers / clips are handy to have for a movie or show.
+  // A clip the model found, then a trailer, so there is always something to watch.
   if (id.youtubeUrl) {
     const v = await youtubeLinkFromUrl(id.youtubeUrl);
     if (v) links.push(v);
+  }
+  if (!links.some((l) => l.provider === "youtube")) {
+    const trailer = await trailerLink(id);
+    if (trailer) links.push(trailer);
   }
   return links;
 }

@@ -4,9 +4,9 @@ import * as ImagePicker from "expo-image-picker";
 import { useKeepAwake } from "expo-keep-awake";
 import { Link, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, type CaptureSource } from "@tvsham/shared";
+import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, MAX_HINT_LENGTH, type CaptureSource } from "@tvsham/shared";
 import { colors, radius, space } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
@@ -16,6 +16,7 @@ type Mode = CaptureSource;
 
 export default function CaptureScreen() {
   const [mode, setMode] = useState<Mode>("camera");
+  const [hint, setHint] = useState("");
   const router = useRouter();
   const { state, start, cancel, reset } = useIdentify();
   const settings = useSettings();
@@ -76,10 +77,15 @@ export default function CaptureScreen() {
           </Muted>
           <Button label="Open Settings" variant="secondary" style={{ marginTop: space.md }} onPress={() => router.push("/settings")} />
         </Card>
-      ) : mode === "camera" ? (
-        <CameraMode state={state} start={start} cancel={cancel} />
       ) : (
-        <ScreenMode state={state} start={start} cancel={cancel} />
+        <>
+          <HintField value={hint} onChange={setHint} disabled={busy} />
+          {mode === "camera" ? (
+            <CameraMode state={state} start={start} cancel={cancel} hint={hint} />
+          ) : (
+            <ScreenMode state={state} start={start} cancel={cancel} hint={hint} />
+          )}
+        </>
       )}
 
       {state.phase === "error" ? (
@@ -93,9 +99,29 @@ export default function CaptureScreen() {
   );
 }
 
-type ModeProps = Pick<ReturnType<typeof useIdentify>, "state" | "start" | "cancel">;
+type ModeProps = Pick<ReturnType<typeof useIdentify>, "state" | "start" | "cancel"> & { hint: string };
 
-function CameraMode({ state, start, cancel }: ModeProps) {
+/**
+ * An optional nudge ("90s sitcom", "on Netflix"). Anything the user already knows
+ * narrows the search a lot, especially for long-running shows.
+ */
+function HintField({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) {
+  return (
+    <TextInput
+      value={value}
+      onChangeText={onChange}
+      editable={!disabled}
+      placeholder="Optional hint: “90s sitcom”, “on Netflix”…"
+      placeholderTextColor={colors.muted}
+      maxLength={MAX_HINT_LENGTH}
+      returnKeyType="done"
+      style={styles.hintField}
+      accessibilityLabel="Optional hint about what you are watching"
+    />
+  );
+}
+
+function CameraMode({ state, start, cancel, hint }: ModeProps) {
   const [camPerm, requestCam] = useCameraPermissions();
   const [micPerm, requestMic] = useMicrophonePermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -142,7 +168,7 @@ function CameraMode({ state, start, cancel }: ModeProps) {
       return;
     }
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    void start("camera", producer);
+    void start("camera", producer, { hints: hint.trim() || undefined });
   };
 
   if (!camPerm || !micPerm) return <ActivityIndicator style={{ marginTop: space.xl }} color={colors.accent} />;
@@ -188,7 +214,7 @@ function CameraMode({ state, start, cancel }: ModeProps) {
   );
 }
 
-function ScreenMode({ state, start, cancel }: ModeProps) {
+function ScreenMode({ state, start, cancel, hint }: ModeProps) {
   const busy = state.phase === "recording" || state.phase === "uploading";
 
   const pick = async () => {
@@ -204,7 +230,7 @@ function ScreenMode({ state, start, cancel }: ModeProps) {
       record: async () => asset.uri,
     };
     // A screen recording is analysed in one go; the server looks at up to a minute of it.
-    void start("screen", producer, { maxClips: 1 });
+    void start("screen", producer, { maxClips: 1, hints: hint.trim() || undefined });
   };
 
   return (
@@ -272,6 +298,18 @@ const styles = StyleSheet.create({
   modeTabText: { color: colors.muted, fontWeight: "600" },
   modeTabTextActive: { color: colors.text },
   notice: { marginHorizontal: space.lg, marginBottom: space.md },
+  hintField: {
+    marginHorizontal: space.lg,
+    marginBottom: space.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    color: colors.text,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
   cameraWrap: {
     flex: 1,
     marginHorizontal: space.lg,

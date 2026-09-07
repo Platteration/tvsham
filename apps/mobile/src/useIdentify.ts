@@ -52,7 +52,7 @@ export function useIdentify() {
   useEffect(() => cancel, [cancel]);
 
   const start = useCallback(
-    async (source: CaptureSource, producer: ClipProducer, opts: { maxClips?: number } = {}) => {
+    async (source: CaptureSource, producer: ClipProducer, opts: { maxClips?: number; hints?: string } = {}) => {
       cancelled.current = false;
       producerRef.current = producer;
       const maxClips = opts.maxClips ?? MAX_CLIPS_PER_SESSION;
@@ -61,7 +61,7 @@ export function useIdentify() {
       try {
         // Start recording immediately; the session is created while the first clip records.
         let recording: Promise<string | null> = producer.record();
-        const sessionId = await createSession(source);
+        const sessionId = await createSession(source, opts.hints);
         if (cancelled.current) return;
         sessionRef.current = sessionId;
 

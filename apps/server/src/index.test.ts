@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
-import { app, safeExtension } from "./index.js";
+import { app, cleanHint, safeExtension } from "./index.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -72,7 +72,7 @@ describe("http", () => {
     let analyses = 0;
     setClientForTests({
       beta: { messages: { create: async () => { analyses++; return { stop_reason: "end_turn", content: [{ type: "text", text: "TITLE: x" }] }; } } },
-      messages: { parse: async () => ({ parsed_output: { kind: "unknown", title: "x", year: null, season: null, episodeNumber: null, episodeTitle: null, creator: null, wikipediaTitle: null, wikipediaEpisodeTitle: null, youtubeUrl: null, confidence: 0, evidence: "", alternatives: [] } }) },
+      messages: { parse: async () => ({ parsed_output: { kind: "unknown", title: "x", year: null, season: null, episodeNumber: null, episodeTitle: null, creator: null, creatorHandle: null, platform: null, wikipediaTitle: null, wikipediaEpisodeTitle: null, youtubeUrl: null, videoUrl: null, confidence: 0, evidence: "", alternatives: [] } }) },
     } as unknown as Anthropic);
     try {
       const created = await app.request("/sessions", { method: "POST" });
@@ -114,6 +114,14 @@ describe("http", () => {
       body: new Blob([new Uint8Array(1024)]),
     });
     assert.equal(res.status, 413);
+  });
+
+  it("normalises the optional hint", () => {
+    assert.equal(cleanHint("  90s   sitcom\non Netflix "), "90s sitcom on Netflix");
+    assert.equal(cleanHint("   "), undefined);
+    assert.equal(cleanHint(42), undefined);
+    assert.equal(cleanHint(undefined), undefined);
+    assert.equal(cleanHint("x".repeat(500))?.length, 120);
   });
 
   it("404s for unknown sessions", async () => {

@@ -33,19 +33,34 @@ export function subtitleFor(id: Identification): string {
   return parts.join(" · ");
 }
 
+/** Providers whose own app should open the link when it is installed. */
+const NATIVE_APP_PROVIDERS = new Set<ResolvedLink["provider"]>(["youtube", "tiktok", "instagram"]);
+
 export async function openLink(link: ResolvedLink): Promise<void> {
-  // youtube.com URLs hand off to the YouTube app when it is installed.
-  if (link.provider === "youtube") {
+  if (NATIVE_APP_PROVIDERS.has(link.provider)) {
     await Linking.openURL(link.url);
     return;
   }
   await WebBrowser.openBrowserAsync(link.url, { presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET });
 }
 
+const PROVIDER_BADGE: Record<ResolvedLink["provider"], { label: string; color: string; text: string }> = {
+  wikipedia: { label: "Wikipedia", color: colors.wikipedia, text: "#111" },
+  youtube: { label: "YouTube", color: colors.youtube, text: "#fff" },
+  tiktok: { label: "TikTok", color: colors.tiktok, text: "#111" },
+  instagram: { label: "Instagram", color: colors.instagram, text: "#fff" },
+  web: { label: "Web", color: colors.surfaceAlt, text: colors.text },
+};
+
+/** The verb for the button that opens this link. */
+export function actionLabel(link: ResolvedLink): string {
+  if (link.provider === "wikipedia") return "Read on Wikipedia";
+  if (link.confidence === "search") return "Search for it";
+  return "Watch now";
+}
+
 export function LinkRow({ link }: { link: ResolvedLink }) {
-  const badge = link.provider === "youtube" ? "YouTube" : link.provider === "wikipedia" ? "Wikipedia" : "Web";
-  const badgeColor = link.provider === "youtube" ? colors.youtube : colors.wikipedia;
-  const badgeText = link.provider === "youtube" ? "#fff" : "#111";
+  const badge = PROVIDER_BADGE[link.provider];
   return (
     <Pressable
       accessibilityRole="link"
@@ -55,7 +70,7 @@ export function LinkRow({ link }: { link: ResolvedLink }) {
       {link.imageUrl ? <Image source={{ uri: link.imageUrl }} style={styles.linkThumb} /> : <View style={[styles.linkThumb, styles.linkThumbEmpty]} />}
       <View style={{ flex: 1, gap: 4 }}>
         <View style={{ flexDirection: "row", gap: space.sm, alignItems: "center" }}>
-          <Chip label={badge} color={badgeColor} textColor={badgeText} />
+          <Chip label={badge.label} color={badge.color} textColor={badge.text} />
           {link.confidence === "search" ? <Muted>search</Muted> : null}
         </View>
         <Text style={styles.linkTitle} numberOfLines={2}>

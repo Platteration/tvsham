@@ -3,7 +3,7 @@ import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { LinkRow, kindLabel, openLink, subtitleFor } from "@/results";
+import { LinkRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
 import { colors, radius, space } from "@/theme";
 import { Body, Button, Card, Chip, Empty, Muted, Title } from "@/ui";
@@ -85,7 +85,7 @@ export default function ResultScreen() {
       ) : null}
 
       <View style={{ gap: space.sm, marginTop: space.md }}>
-        {primary ? <Button label={primary.provider === "youtube" ? "Watch now" : "Read on Wikipedia"} onPress={() => void openLink(primary)} /> : null}
+        {primary ? <Button label={actionLabel(primary)} onPress={() => void openLink(primary)} /> : null}
         <Button
           label={saved ? "Saved for later ✓" : "Save for later"}
           variant="secondary"

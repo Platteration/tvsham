@@ -9,6 +9,7 @@ import path from "node:path";
 import {
   CONFIDENT_THRESHOLD,
   MAX_CLIPS_PER_SESSION,
+  MAX_HINT_LENGTH,
   MIN_USEFUL_CONFIDENCE,
   type CaptureSource,
   type CreateSessionResponse,
@@ -66,7 +67,7 @@ app.get("/health", async (c) => {
 app.post("/sessions", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { source?: string; hints?: string };
   const source: CaptureSource = body.source === "screen" ? "screen" : "camera";
-  const s = createSession(source, body.hints);
+  const s = createSession(source, cleanHint(body.hints));
   const res: CreateSessionResponse = { sessionId: s.id };
   return c.json(res, 201);
 });
@@ -194,6 +195,13 @@ function describe(s: Session): RecognitionResult {
       ? "Not sure yet. Try to get dialogue or on-screen text in the shot."
       : "Couldn't identify this. Try again with a clearer view or a longer clip.",
   };
+}
+
+/** The user's optional hint: collapsed to one short single line before it reaches the model. */
+export function cleanHint(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const hint = raw.replace(/\s+/g, " ").trim().slice(0, MAX_HINT_LENGTH);
+  return hint.length > 0 ? hint : undefined;
 }
 
 const ALLOWED_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".3gp"]);

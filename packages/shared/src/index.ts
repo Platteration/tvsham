@@ -16,10 +16,13 @@ export type MediaKind =
   | "other"
   | "unknown";
 
+/** Platforms a short video can live on. */
+export type VideoPlatform = "youtube" | "tiktok" | "instagram" | "other";
+
 /** A link the user can open or save. */
 export interface ResolvedLink {
   /** Where the link points. */
-  provider: "wikipedia" | "youtube" | "web";
+  provider: "wikipedia" | "youtube" | "tiktok" | "instagram" | "web";
   url: string;
   title: string;
   /** Short blurb (Wikipedia extract, YouTube channel name, ...). */
@@ -47,6 +50,10 @@ export interface Identification {
   };
   /** Channel / creator for youtube and short_form. */
   creator?: string;
+  /** The creator's @handle, without the @. */
+  creatorHandle?: string;
+  /** Which app the short video is from, so we link to the right one. */
+  platform?: VideoPlatform;
   /** 0..1 – how sure the recogniser is. */
   confidence: number;
   /** One or two sentences: what evidence led to this answer. */
@@ -57,6 +64,8 @@ export interface Identification {
   wikipediaEpisodeTitle?: string;
   /** Direct YouTube URL if the model found one. */
   youtubeUrl?: string;
+  /** Direct URL on the video's own platform (TikTok, Instagram, ...). */
+  videoUrl?: string;
   /** Alternative candidates, best first, when confidence is low. */
   alternatives?: Array<{ title: string; kind: MediaKind; year?: number }>;
 }
@@ -75,6 +84,9 @@ export interface RecognitionResult {
   /** Human-readable hint for the UI ("Keep pointing at the screen…"). */
   message: string;
 }
+
+/** Longest hint the app will send with a session. */
+export const MAX_HINT_LENGTH = 120;
 
 export interface CreateSessionResponse {
   sessionId: string;

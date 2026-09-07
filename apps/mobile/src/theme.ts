@@ -12,6 +12,8 @@ export const colors = {
   danger: "#ff5c7a",
   wikipedia: "#e8e8e8",
   youtube: "#ff3d3d",
+  tiktok: "#25f4ee",
+  instagram: "#e1306c",
 } as const;
 
 export const radius = { sm: 8, md: 14, lg: 22, pill: 999 } as const;

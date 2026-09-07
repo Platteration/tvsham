@@ -3,7 +3,7 @@ import type { SavedItem } from "@tvsham/shared";
 import { clearHistory, removeSaved, saveHistoryItem, setWatched, useHistory, useLibrary } from "@/store";
 import { colors, radius, space } from "@/theme";
 import { Button, Chip, Empty, Muted } from "@/ui";
-import { kindLabel, openLink, subtitleFor } from "@/results";
+import { actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 
 function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
   const primary = item.links[0];
@@ -32,7 +32,7 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
         {subtitleFor(item.identification) ? <Muted numberOfLines={1}>{subtitleFor(item.identification)}</Muted> : null}
         <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.xs, flexWrap: "wrap" }}>
           {primary ? (
-            <Button label={primary.provider === "youtube" ? "Watch" : "Read"} compact onPress={() => void openLink(primary)} />
+            <Button label={primary.provider === "wikipedia" ? "Read" : "Open"} compact onPress={() => void openLink(primary)} />
           ) : null}
           {recent ? (
             <Button label="Save for later" compact variant="secondary" onPress={() => void saveHistoryItem(item)} />

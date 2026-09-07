@@ -10,9 +10,12 @@ const base = {
   episodeNumber: 14,
   episodeTitle: "Ozymandias",
   creator: null,
+  creatorHandle: null,
+  platform: null,
   wikipediaTitle: "Breaking Bad",
   wikipediaEpisodeTitle: "Ozymandias (Breaking Bad)",
   youtubeUrl: null,
+  videoUrl: null,
   confidence: 0.92,
   evidence: "Walt on the phone; subtitle text matched.",
   alternatives: [],
@@ -38,6 +41,8 @@ describe("toIdentification", () => {
       episodeNumber: null,
       episodeTitle: null,
       creator: "MrBeast",
+      creatorHandle: "@MrBeast",
+      platform: "youtube",
       youtubeUrl: "https://vimeo.com/123",
       confidence: 1.4,
       alternatives: [{ title: "Other", kind: "movie", year: null }],
@@ -45,6 +50,8 @@ describe("toIdentification", () => {
     assert.equal(id.episode, undefined);
     assert.equal(id.year, undefined);
     assert.equal(id.creator, "MrBeast");
+    assert.equal(id.creatorHandle, "MrBeast");
+    assert.equal(id.platform, "youtube");
     assert.equal(id.youtubeUrl, undefined);
     assert.equal(id.confidence, 1);
     assert.deepEqual(id.alternatives, [{ title: "Other", kind: "movie" }]);
