@@ -145,8 +145,12 @@ app.post("/sessions/:id/clips", async (c) => {
     // to settle: otherwise a retry gets the half-written "still listening" state
     // and the app stores that as the answer. Bounded, because s.busy is the tail
     // of the whole session's queue and this path exists to answer quickly.
-    await Promise.race([s.busy, delay(config.retryWaitMs)]);
-    return c.json(describe(s));
+    const settled = await settledWithin(s.busy, config.retryWaitMs);
+    if (settled) return c.json(describe(s));
+    // Still working. 202 says so explicitly, so the caller polls GET /sessions/:id
+    // rather than mistaking a mid-flight state for the final answer.
+    c.header("Retry-After", "5");
+    return c.json({ ...describe(s), message: "Still analysing this clip." }, 202);
   }
   // Read now, while the socket is still open: the work below runs after a queue
   // wait, by which time a disconnected client has no address to bill.
@@ -247,11 +251,22 @@ function overLimit(c: Context, s: Session) {
   return c.json(overLimitResult(s), 429);
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    t.unref?.();
+/**
+ * Whether `work` finished inside `ms`. The timer is always cleared: an
+ * uncancelled one would outlive every request that settled on the first tick.
+ */
+async function settledWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  if (ms <= 0) return false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
   });
+  try {
+    return await Promise.race([work.then(() => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Clip keys come from the client, and are only ever compared, never interpolated. */

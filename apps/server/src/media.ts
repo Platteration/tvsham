@@ -99,17 +99,19 @@ export async function probe(file: string): Promise<Probe> {
   let height = 0;
   let coverPixels = 0;
   for (const line of stderr.split("\n")) {
+    if (!line.includes("Video:")) continue;
     const m = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(line);
+    // Cover art is counted separately: it is not the stream frames come from,
+    // so it must not stand in for the video, but it is still decoded on every
+    // probe and so cannot be waved through either. Dimensions we cannot read
+    // are treated as too large rather than as zero.
+    if (line.includes("(attached pic)")) {
+      coverPixels = m ? Math.max(coverPixels, Number(m[1]) * Number(m[2])) : Number.POSITIVE_INFINITY;
+      continue;
+    }
     if (!m) continue;
     const w = Number(m[1]);
     const h = Number(m[2]);
-    // Cover art is counted separately: it is not the stream frames come from,
-    // so it must not stand in for the video, but it is still decoded on every
-    // probe and so cannot be waved through either.
-    if (line.includes("(attached pic)")) {
-      coverPixels = Math.max(coverPixels, w * h);
-      continue;
-    }
     if (w * h > width * height) {
       width = w;
       height = h;

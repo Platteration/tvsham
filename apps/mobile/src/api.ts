@@ -105,6 +105,13 @@ export async function uploadClip(
       body: form,
       signal: opts.signal ?? null,
     });
+    // 202 means this clip was already accepted and is still being analysed —
+    // the body is the session mid-flight, not an answer. Follow it up rather
+    // than passing a "still listening" state off as the result.
+    if (res.status === 202) {
+      await parse<RecognitionResult>(res);
+      return pollUntilAnswered(sessionId, opts.signal);
+    }
     return parse<RecognitionResult>(res);
   };
   try {
@@ -115,6 +122,26 @@ export async function uploadClip(
     await new Promise((r) => setTimeout(r, 800));
     return send();
   }
+}
+
+/** The session's current state, used to follow up a clip the server is still analysing. */
+export async function fetchSession(sessionId: string): Promise<RecognitionResult> {
+  const res = await fetch(`${baseUrl()}/sessions/${sessionId}`, { headers: headers() });
+  return parse<RecognitionResult>(res);
+}
+
+/** How long to keep asking after a 202, and how often. */
+const POLL_ATTEMPTS = 20;
+const POLL_INTERVAL_MS = 3000;
+
+async function pollUntilAnswered(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
+  let latest = await fetchSession(sessionId);
+  for (let i = 0; i < POLL_ATTEMPTS && !latest.identification; i++) {
+    if (signal?.aborted) break;
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    latest = await fetchSession(sessionId);
+  }
+  return latest;
 }
 
 export async function endSession(sessionId: string): Promise<void> {

@@ -201,6 +201,31 @@ describe("limits", () => {
     assert.equal(cleanClipKey(42), undefined);
   });
 
+  it("says 202 rather than passing a mid-flight state off as the answer", async () => {
+    const original = config.retryWaitMs;
+    (config as { retryWaitMs: number }).retryWaitMs = 0; // do not wait at all
+    try {
+      const created = await app.request("/sessions", { method: "POST" });
+      const { sessionId } = (await created.json()) as { sessionId: string };
+      const s = getSession(sessionId);
+      s?.seenClipKeys.add("in-flight");
+      // A session still working: s.busy never settles within the wait.
+      if (s) s.busy = new Promise(() => {});
+      const form = new FormData();
+      form.set("clip", new Blob([new Uint8Array(8)]), "clip.mp4");
+      const res = await app.request(`/sessions/${sessionId}/clips`, {
+        method: "POST",
+        headers: { "x-clip-key": "in-flight" },
+        body: form,
+      });
+      assert.equal(res.status, 202);
+      assert.equal(res.headers.get("retry-after"), "5");
+      assert.match(((await res.json()) as { message: string }).message, /Still analysing/);
+    } finally {
+      (config as { retryWaitMs: number }).retryWaitMs = original;
+    }
+  });
+
   it("recognises a retried clip from its header, before the body is parsed", async () => {
     const created = await app.request("/sessions", { method: "POST" });
     const { sessionId } = (await created.json()) as { sessionId: string };

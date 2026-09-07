@@ -90,7 +90,7 @@ Check it: `curl http://localhost:8787/health` →
 | `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
 | `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
 | `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
-| `RETRY_WAIT_MS` | `45000` | How long a retried clip waits for the original analysis before answering with the current state. |
+| `RETRY_WAIT_MS` | `45000` | How long a retried clip waits for the original analysis before the server answers 202 and the app polls. 0 answers 202 immediately. |
 | `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
 | `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
@@ -109,6 +109,8 @@ Check it: `curl http://localhost:8787/health` →
 | `POST` | `/sessions/:id/clips` | multipart, field `clip` (mp4/mov/webm) | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
+
+A clip upload answers `202` when that clip is already being analysed (a retry arriving while the original is in flight); the app then polls `GET /sessions/:id` instead of mistaking the mid-flight state for an answer.
 
 `RecognitionResult.status` is `listening` (send another clip), `identified`, `unsure` (best guess after the clip limit) or `failed`. See `packages/shared/src/index.ts` for the full shapes.
 

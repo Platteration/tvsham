@@ -10,6 +10,12 @@ function positiveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
 }
 
+/** Like positiveInt, but 0 is a meaningful value ("off") rather than a typo. */
+function nonNegativeInt(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
 export const config = {
   port: Number(env("PORT", "8787")),
   appToken: env("APP_TOKEN"),
@@ -65,7 +71,7 @@ export const config = {
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
   maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
   /** Longest a retried clip waits for the original analysis before answering. */
-  retryWaitMs: positiveInt(env("RETRY_WAIT_MS"), 45_000),
+  retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */
   sessionTtlMs: 15 * 60 * 1000,
   version: "0.1.0",
