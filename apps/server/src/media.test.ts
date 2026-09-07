@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { before, after, describe, it } from "node:test";
 import { promisify } from "node:util";
-import { extractAudio, extractFrames, ffmpegBinary, probeDuration } from "./media.js";
+import { config } from "./config.js";
+import { assertDecodable, extractAudio, extractFrames, ffmpegBinary, probe, probeDuration } from "./media.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,6 +45,51 @@ describe("media", () => {
       assert.equal(f.jpeg[0], 0xff);
       assert.equal(f.jpeg[1], 0xd8);
     }
+  });
+
+  it("reads the frame size, not just the duration", async () => {
+    const p = await probe(clip);
+    assert.equal(p.width, 320);
+    assert.equal(p.height, 180);
+  });
+
+  it("refuses to decode more pixels than the budget allows", async () => {
+    const original = config.maxPixels;
+    (config as { maxPixels: number }).maxPixels = 1000; // the clip is 320x180
+    try {
+      await assertDecodable(clip);
+      assert.fail("expected an oversized clip to be refused");
+    } catch (err) {
+      assert.match(String(err), /larger than this server will decode/);
+    } finally {
+      (config as { maxPixels: number }).maxPixels = original;
+    }
+  });
+
+  it("refuses to decode a clip longer than the budget allows", async () => {
+    const original = config.maxDurationSeconds;
+    (config as { maxDurationSeconds: number }).maxDurationSeconds = 1; // the clip is 5s
+    try {
+      await assertDecodable(clip);
+      assert.fail("expected an overlong clip to be refused");
+    } catch (err) {
+      assert.match(String(err), /longer than this server will decode/);
+    } finally {
+      (config as { maxDurationSeconds: number }).maxDurationSeconds = original;
+    }
+  });
+
+  it("accepts a clip inside the budget", async () => {
+    const p = await assertDecodable(clip);
+    assert.ok(p.seconds > 4.5);
+  });
+
+  it("settles rather than hanging when ffmpeg cannot read the input", async () => {
+    const junk = path.join(dir, "not-a-video.mp4");
+    await fs.writeFile(junk, Buffer.alloc(4096, 0x41));
+    const p = await probe(junk);
+    assert.equal(p.seconds, 0);
+    assert.equal(p.width, 0);
   });
 
   it("extracts mono 16 kHz wav audio", async () => {

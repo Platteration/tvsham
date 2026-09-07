@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 import { DEFAULT_SETTINGS, sanitise, type Settings } from "./settings";
@@ -33,6 +34,12 @@ const SETTINGS_KEY = "tvsham.settings.v1";
 const LIBRARY_KEY = "tvsham.library.v1";
 const HISTORY_KEY = "tvsham.history.v1";
 const DEVICE_KEY = "tvsham.device.v1";
+/**
+ * The server token is a shared secret for a paid service, so it lives in the
+ * keychain rather than AsyncStorage, which is a plain file that device backups
+ * include. Everything else is preferences and stays where it is.
+ */
+const TOKEN_KEY = "tvsham.token.v1";
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
@@ -84,7 +91,10 @@ export function hydrate(): Promise<void> {
         await AsyncStorage.setItem(DEVICE_KEY, deviceId);
       }
       const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
-      if (savedSettings) settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings }));
+      const token = await readToken(savedSettings?.token);
+      if (savedSettings || token) {
+        settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings, token }));
+      }
       const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
       if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
       const savedHistory = h?.[1] ? (JSON.parse(h[1]) as SavedItem[]) : null;
@@ -108,7 +118,37 @@ export function useSettings(): Settings {
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
-  await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settingsStore.get()));
+  const { token, ...rest } = settingsStore.get();
+  await Promise.all([
+    AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...rest, token: "" })),
+    writeToken(token),
+  ]);
+}
+
+/** Read the token from the keychain, migrating one left in AsyncStorage by an older build. */
+async function readToken(legacy: string | undefined): Promise<string> {
+  try {
+    const stored = await SecureStore.getItemAsync(TOKEN_KEY);
+    if (stored) return stored;
+    if (legacy) {
+      await SecureStore.setItemAsync(TOKEN_KEY, legacy);
+      return legacy;
+    }
+  } catch (err) {
+    // A device without a usable keychain still gets a working app.
+    console.warn("[store] secure storage unavailable", err);
+    return legacy ?? "";
+  }
+  return "";
+}
+
+async function writeToken(token: string): Promise<void> {
+  try {
+    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
+    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+  } catch (err) {
+    console.warn("[store] could not save the token securely", err);
+  }
 }
 
 export function useHydrated(): boolean {
