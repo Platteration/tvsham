@@ -56,6 +56,26 @@ export function actionLabel(link: ResolvedLink): string {
   return "Watch now";
 }
 
+/**
+ * Links arrive from the server as strings. The server builds them soundly, but
+ * the app talks to it over plain HTTP by default, so anyone on the same network
+ * could rewrite one. Only web schemes are ever handed to the OS: on Android a
+ * scheme like intent:// would launch another app entirely.
+ */
+export function isSafeWebUrl(raw: string): boolean {
+  try {
+    const { protocol } = new URL(raw);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/** An image source is only used when it is a web URL; anything else is dropped. */
+export function safeImageUri(raw: string | undefined): string | undefined {
+  return raw && isSafeWebUrl(raw) ? raw : undefined;
+}
+
 export const WATCH_LABEL: Record<WatchOption["kind"], string> = {
   stream: "Streaming",
   rent: "Rent",

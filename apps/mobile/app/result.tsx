@@ -4,6 +4,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import { Image, Pressable, ScrollView, View } from "react-native";
 import { ConfidenceRing } from "@/motion";
+import { safeImageUri } from "@/format";
 import { CastStrip, LinkRow, WatchRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
 import { makeStyles, radius, space, useTheme } from "@/theme";
@@ -24,7 +25,7 @@ export default function ResultScreen() {
   const id = result.identification!;
   const saved = library.some((i) => i.id === result.sessionId) || isSaved(result);
   const primary = result.links[0];
-  const hero = result.links.find((l) => l.imageUrl)?.imageUrl;
+  const hero = safeImageUri(result.links.find((l) => safeImageUri(l.imageUrl))?.imageUrl);
   const confident = result.status === "identified";
 
   const onSave = async () => {

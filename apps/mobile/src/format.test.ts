@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Identification } from "@tvsham/shared";
-import { actionLabel, kindLabel, providerBadge, subtitleFor } from "./format.js";
+import { actionLabel, isSafeWebUrl, kindLabel, providerBadge, safeImageUri, subtitleFor } from "./format.js";
 import { paletteFor } from "./palette.js";
 
 const base: Identification = { kind: "movie", title: "Inception", confidence: 0.9, evidence: "t" };
@@ -63,5 +63,35 @@ describe("providerBadge", () => {
     assert.equal(providerBadge(p, "tiktok").label, "TikTok");
     assert.equal(providerBadge(p, "instagram").color, p.instagram);
     assert.equal(providerBadge(p, "web").color, p.surfaceAlt);
+  });
+});
+
+describe("link safety", () => {
+  it("accepts ordinary web links", () => {
+    assert.equal(isSafeWebUrl("https://en.wikipedia.org/wiki/Inception"), true);
+    assert.equal(isSafeWebUrl("http://192.168.1.20:8787/x"), true);
+  });
+
+  it("refuses schemes that would hand control to another app", () => {
+    // An attacker on the same network can rewrite a plain-HTTP response, so the
+    // app must not pass whatever it receives to the OS.
+    for (const url of [
+      "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "intent://scan/#Intent;scheme=zxing;end",
+      "file:///etc/passwd",
+      "tel:+15550100",
+      "market://details?id=com.example",
+      "not a url",
+      "",
+    ]) {
+      assert.equal(isSafeWebUrl(url), false, url);
+    }
+  });
+
+  it("drops image sources that are not web URLs", () => {
+    assert.equal(safeImageUri("https://img.example/x.jpg"), "https://img.example/x.jpg");
+    assert.equal(safeImageUri("file:///etc/passwd"), undefined);
+    assert.equal(safeImageUri(undefined), undefined);
   });
 });

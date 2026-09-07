@@ -91,7 +91,10 @@ export async function enqueue(
 ): Promise<QueuedClip | null> {
   try {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const name = `${id}.${clipUri.split(".").pop()?.slice(0, 4) || "mp4"}`;
+    // The extension is derived from a path, so it is stripped to letters and
+    // digits: a separator here would place the file outside pending-clips.
+    const suffix = clipUri.split(".").pop()?.replace(/[^A-Za-z0-9]/g, "").slice(0, 4);
+    const name = `${id}.${suffix || "mp4"}`;
     const source_ = new File(clipUri);
     if (!source_.exists) return null;
     const target = new File(pendingDir(), name);

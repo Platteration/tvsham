@@ -21,6 +21,13 @@ describe("usage store", () => {
     assert.equal(u.take("b"), true);
   });
 
+  it("forgets old callers rather than growing without bound", () => {
+    const u = createUsageStore(5);
+    for (let i = 0; i < 10_050; i++) u.take(`caller-${i}`);
+    // The most recent caller is still counted; memory has not run away.
+    assert.equal(u.used("caller-10049"), 1);
+  });
+
   it("resets on the next day", () => {
     const u = createUsageStore(1);
     const t = 1_800_000_000_000;

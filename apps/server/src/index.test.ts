@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
-import { app, cleanHint, safeExtension } from "./index.js";
+import { app, caller, cleanHint, safeExtension } from "./index.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -154,5 +154,38 @@ describe("http", () => {
     form.set("clip", new Blob([new Uint8Array(4)]), "clip.mp4");
     const res = await app.request("/sessions/nope/clips", { method: "POST", body: form });
     assert.equal(res.status, 404);
+  });
+});
+
+describe("limits", () => {
+  it("bills a caller by something they cannot choose", async () => {
+    // Two requests differing only in the headers a client controls must not
+    // land in different buckets, or the daily cap counts nothing.
+    const withHeaders = (h: Record<string, string>) =>
+      caller({
+        req: { header: (name: string) => h[name.toLowerCase()] },
+      } as unknown as Parameters<typeof caller>[0]);
+
+    assert.equal(withHeaders({ "x-device-id": "aaaaaaaabbbbbbbb" }), withHeaders({ "x-device-id": "ccccccccdddddddd" }));
+    assert.equal(withHeaders({ "x-forwarded-for": "1.2.3.4" }), withHeaders({ "x-forwarded-for": "5.6.7.8" }));
+  });
+
+  it("refuses to create sessions without bound", async () => {
+    const made: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await app.request("/sessions", { method: "POST" });
+      if (res.status === 201) made.push(((await res.json()) as { sessionId: string }).sessionId);
+    }
+    assert.ok(made.length > 0);
+    for (const id of made) await app.request(`/sessions/${id}`, { method: "DELETE" });
+  });
+
+  it("rejects an oversized session body before parsing it", async () => {
+    const res = await app.request("/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(1024 * 1024) },
+      body: JSON.stringify({ source: "camera", hints: "x".repeat(8192) }),
+    });
+    assert.equal(res.status, 413);
   });
 });

@@ -1,7 +1,7 @@
 import * as WebBrowser from "expo-web-browser";
 import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { CastMember, ResolvedLink, WatchOption } from "@tvsham/shared";
-import { WATCH_LABEL, providerBadge } from "./format";
+import { WATCH_LABEL, isSafeWebUrl, providerBadge, safeImageUri } from "./format";
 import { makeStyles, radius, space, useTheme } from "./theme";
 import { Chip, Muted } from "./ui";
 
@@ -11,6 +11,10 @@ export { actionLabel, kindLabel, subtitleFor } from "./format";
 const NATIVE_APP_PROVIDERS = new Set<ResolvedLink["provider"]>(["youtube", "tiktok", "instagram"]);
 
 export async function openLink(link: ResolvedLink): Promise<void> {
+  if (!isSafeWebUrl(link.url)) {
+    console.warn("[results] refusing to open a non-web link");
+    return;
+  }
   if (NATIVE_APP_PROVIDERS.has(link.provider)) {
     await Linking.openURL(link.url);
     return;
@@ -28,7 +32,11 @@ export function LinkRow({ link }: { link: ResolvedLink }) {
       onPress={() => void openLink(link)}
       style={({ pressed }) => [styles.linkRow, pressed && { opacity: 0.7 }]}
     >
-      {link.imageUrl ? <Image source={{ uri: link.imageUrl }} style={styles.linkThumb} /> : <View style={[styles.linkThumb, styles.linkThumbEmpty]} />}
+      {safeImageUri(link.imageUrl) ? (
+        <Image source={{ uri: safeImageUri(link.imageUrl) }} style={styles.linkThumb} />
+      ) : (
+        <View style={[styles.linkThumb, styles.linkThumbEmpty]} />
+      )}
       <View style={{ flex: 1, gap: 4 }}>
         <View style={{ flexDirection: "row", gap: space.sm, alignItems: "center" }}>
           <Chip label={badge.label} color={badge.color} textColor={badge.text} />
@@ -55,12 +63,12 @@ export function WatchRow({ options }: { options: WatchOption[] }) {
       {options.map((o) => (
         <Pressable
           key={`${o.kind}-${o.service}`}
-          onPress={() => void WebBrowser.openBrowserAsync(o.url)}
+          onPress={() => isSafeWebUrl(o.url) && void WebBrowser.openBrowserAsync(o.url)}
           style={({ pressed }) => [styles.watchChip, pressed && { opacity: 0.7 }]}
           accessibilityRole="link"
           accessibilityLabel={`${o.service}, ${WATCH_LABEL[o.kind]}`}
         >
-          {o.logoUrl ? <Image source={{ uri: o.logoUrl }} style={styles.watchLogo} /> : null}
+          {safeImageUri(o.logoUrl) ? <Image source={{ uri: safeImageUri(o.logoUrl) }} style={styles.watchLogo} /> : null}
           <View>
             <Text style={styles.watchService} numberOfLines={1}>
               {o.service}
@@ -84,11 +92,11 @@ export function CastStrip({ cast }: { cast: CastMember[] }) {
           disabled={!c.url}
           accessibilityRole="link"
           accessibilityLabel={c.character ? `${c.name} as ${c.character}` : c.name}
-          onPress={() => c.url && void WebBrowser.openBrowserAsync(c.url)}
+          onPress={() => c.url && isSafeWebUrl(c.url) && void WebBrowser.openBrowserAsync(c.url)}
           style={({ pressed }) => [styles.castCard, pressed && { opacity: 0.7 }]}
         >
-          {c.imageUrl ? (
-            <Image source={{ uri: c.imageUrl }} style={styles.castPhoto} />
+          {safeImageUri(c.imageUrl) ? (
+            <Image source={{ uri: safeImageUri(c.imageUrl) }} style={styles.castPhoto} />
           ) : (
             <View style={[styles.castPhoto, styles.castPhotoEmpty]}>
               <Text style={styles.castInitial}>{c.name.slice(0, 1)}</Text>

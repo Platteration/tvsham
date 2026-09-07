@@ -66,9 +66,11 @@ Check it: `curl http://localhost:8787/health` →
 ### Deploying safely
 
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
-- Set `DAILY_CLIP_LIMIT` if the server is public. The app sends a random per-install id (`X-Device-Id`) that the cap counts against; callers without one are counted by address. It identifies the install and nothing about the person.
+- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. Behind a proxy, set `TRUST_PROXY=true` so the real client address is used. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
 - Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
+- Decoding is bounded: every ffmpeg run has a hard timeout, oversized or overlong inputs are refused before a frame is decoded, and the input is restricted to local files. A small file can otherwise declare enormous dimensions and cost gigabytes to decode.
+- No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 ### Server configuration
@@ -80,7 +82,13 @@ Check it: `curl http://localhost:8787/health` →
 | `PORT` | `8787` | Listen port. |
 | `APP_TOKEN` | – | If set, the app must send it as a bearer token (enter it in Settings). |
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
-| `DAILY_CLIP_LIMIT` | `0` (off) | Clips one device may have analysed per day. In-memory, so it resets on restart. |
+| `DAILY_CLIP_LIMIT` | `0` (off) | Clips one caller may have analysed per day, counted against the connecting address. In-memory, so it resets on restart. |
+| `TRUST_PROXY` | `false` | Count the cap against `X-Forwarded-For`. Only enable behind a proxy you control. |
+| `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. |
+| `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
+| `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
+| `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
+| `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
 | `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
 | `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
