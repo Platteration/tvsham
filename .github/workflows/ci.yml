@@ -17,8 +17,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Typecheck (shared, server, mobile)
         run: npm run typecheck
-      - name: Server tests
-        run: npm test --workspace apps/server
+      - name: Tests (server and app)
+        run: npm test
       - name: Bundle the app with Metro
         run: npx expo export --platform android --output-dir /tmp/export
         working-directory: apps/mobile

@@ -3,6 +3,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
 import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
+import { isHopeless } from "./queue-policy";
 import { setLastResult } from "./store";
 
 /**
@@ -143,13 +144,6 @@ export interface FlushOutcome {
   last?: RecognitionResult;
 }
 
-/**
- * Statuses that mean this clip will never work: too big, or not a video we can
- * read. Anything else (auth not set up yet, the daily cap, a server fault) may
- * succeed later, so the clip is kept.
- */
-const HOPELESS_STATUSES = new Set([400, 413, 415]);
-
 let inFlight: Promise<FlushOutcome> | null = null;
 
 /**
@@ -190,9 +184,7 @@ async function runFlush(): Promise<FlushOutcome> {
       await remove(item.id);
     } catch (err) {
       outcome.failed++;
-      if (err instanceof ApiError && err.status !== undefined && HOPELESS_STATUSES.has(err.status)) {
-        await remove(item.id);
-      }
+      if (err instanceof ApiError && isHopeless(err.status)) await remove(item.id);
     } finally {
       if (sessionId) void endSession(sessionId);
     }

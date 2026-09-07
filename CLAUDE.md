@@ -20,7 +20,7 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 ```bash
 npm install
 npm run typecheck                  # every workspace
-npm test --workspace apps/server   # node:test; needs no network or API key
+npm test                           # node:test in both workspaces; no network or API key
 npm run server                     # tsx watch, port 8787
 npm run mobile                     # expo start
 cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
@@ -35,6 +35,11 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 - Uploaded clips live under `apps/server/tmp/<session>-<n>` and are deleted after analysis.
 - No test can hit the real API. Verify changes with typecheck, the unit tests, and
   `npx expo export` for the app bundle.
+- App logic worth testing goes in a React-Native-free module (`palette.ts`,
+  `settings.ts`, `format.ts`, `queue-policy.ts`); the `.tsx` files then hold only
+  rendering. That is what makes `npm test` possible in `apps/mobile` at all.
+- Colour changes must keep `palette.test.ts` green: it checks every text pairing in
+  both schemes and all four accents against WCAG AA.
 
 ## Things that trip people up
 

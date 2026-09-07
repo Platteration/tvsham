@@ -122,7 +122,7 @@ Both modes take an optional one-line hint ("90s sitcom", "on Netflix"). Anything
 
 Dark by default, with a full light palette that follows the system or can be pinned in Settings, and four accent packs. While a clip is being taken, sonar rings pulse out of the capture button and the button breathes, so the wait reads as listening rather than hanging; corner brackets frame where to point. Results lead with a confidence ring (green, amber, red) instead of a bare percentage, over a poster backdrop blurred to fill the card. All animation is native-driven so the camera preview stays smooth.
 
-Colours live in one palette (`src/theme.tsx`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
+Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
 
 ### When the server is out of reach
 
@@ -136,8 +136,14 @@ The result screen shows what it found, how sure it is, the evidence, and the lin
 
 ```bash
 npm run typecheck     # all workspaces
-npm test              # server unit tests (ffmpeg pipeline, link resolution, HTTP routes)
+npm test              # unit tests in both workspaces
 ```
+
+The server tests cover the ffmpeg pipeline, link resolution, TMDB enrichment, the
+recogniser's control flow against a fake client, and the HTTP routes. The app tests cover
+the pure layer: settings validation, result formatting, the offline-queue drop policy, and
+a contrast audit that holds every text pairing in both schemes and all four accents to
+WCAG AA.
 
 CI (`.github/workflows/ci.yml`) runs the typecheck, the server tests, a Metro bundle of the app, and a Docker build of the server.
 
