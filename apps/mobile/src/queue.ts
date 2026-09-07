@@ -103,9 +103,10 @@ export async function enqueue(
       reason,
       ...(hint ? { hint } : {}),
     };
-    queue = [item, ...queue].slice(0, MAX_QUEUED);
+    const next = [item, ...queue];
     // Anything pushed off the end has no way back, so remove its file too.
-    for (const dropped of [item, ...queue].slice(MAX_QUEUED + 1)) discardFile(dropped.uri);
+    for (const dropped of next.slice(MAX_QUEUED)) discardFile(dropped.uri);
+    queue = next.slice(0, MAX_QUEUED);
     await persist();
     return item;
   } catch {
@@ -138,15 +139,40 @@ export async function clearQueue(): Promise<void> {
 export interface FlushOutcome {
   identified: number;
   failed: number;
-  /** The last result, so the caller can show it. */
+  /** The last result, identified or not, so the caller can show it. */
   last?: RecognitionResult;
 }
 
 /**
+ * Statuses that mean this clip will never work: too big, or not a video we can
+ * read. Anything else (auth not set up yet, the daily cap, a server fault) may
+ * succeed later, so the clip is kept.
+ */
+const HOPELESS_STATUSES = new Set([400, 413, 415]);
+
+let inFlight: Promise<FlushOutcome> | null = null;
+
+/**
  * Try every queued clip, oldest first. A clip that uploads is removed whatever
  * the answer was; one that fails again stays for next time.
+ *
+ * Only one flush runs at a time: a second caller joins the one already going,
+ * so a foreground event during a manual retry cannot upload everything twice.
  */
-export async function flushQueue(): Promise<FlushOutcome> {
+export function flushQueue(): Promise<FlushOutcome> {
+  if (!inFlight) {
+    inFlight = runFlush().finally(() => {
+      inFlight = null;
+    });
+  }
+  return inFlight;
+}
+
+export function isFlushing(): boolean {
+  return inFlight !== null;
+}
+
+async function runFlush(): Promise<FlushOutcome> {
   const outcome: FlushOutcome = { identified: 0, failed: 0 };
   for (const item of [...queue].reverse()) {
     if (!fileExists(item.uri)) {
@@ -158,16 +184,13 @@ export async function flushQueue(): Promise<FlushOutcome> {
       sessionId = await createSession(item.source, item.hint);
       const result = await uploadClip(sessionId, item.uri, { clipKey: item.id });
       outcome.last = result;
-      if (result.identification && result.identification.kind !== "unknown") {
-        outcome.identified++;
-        setLastResult({ result, source: item.source });
-      }
+      // The clip was analysed, so it is spent whatever the answer was.
+      setLastResult({ result, source: item.source });
+      if (result.identification && result.identification.kind !== "unknown") outcome.identified++;
       await remove(item.id);
     } catch (err) {
       outcome.failed++;
-      // A rejection from the server means the clip is no good; only keep it
-      // when the network was the problem.
-      if (err instanceof ApiError && err.status !== undefined && err.status < 500) {
+      if (err instanceof ApiError && err.status !== undefined && HOPELESS_STATUSES.has(err.status)) {
         await remove(item.id);
       }
     } finally {

@@ -11,7 +11,7 @@ import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
-import { clearQueue, flushQueue, loadQueue, queueLength, useQueue } from "@/queue";
+import { clearQueue, flushQueue, isFlushing, loadQueue, queueLength, useQueue } from "@/queue";
 import { useHydrated, useSettings } from "@/store";
 
 type Mode = CaptureSource;
@@ -38,7 +38,9 @@ export default function CaptureScreen() {
     setFlushing(true);
     try {
       const outcome = await flushQueue();
-      if (outcome.identified > 0) router.push("/result");
+      // Show the answer even when it is "couldn't identify", so a clip never
+      // disappears from the queue without the user learning what happened.
+      if (outcome.last?.identification) router.push("/result");
     } finally {
       setFlushing(false);
     }
@@ -48,7 +50,7 @@ export default function CaptureScreen() {
   // connection has come back too.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active" && queueLength() > 0 && !busy) void flush();
+      if (next === "active" && queueLength() > 0 && !busy && !isFlushing()) void flush();
     });
     return () => sub.remove();
   }, [busy, flush]);
