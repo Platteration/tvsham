@@ -179,7 +179,15 @@ npm run eval --workspace apps/server -- --clips apps/server/eval-clips --limit 3
 npm run eval --workspace apps/server -- --clips apps/server/eval-clips --model claude-sonnet-5
 ```
 
-It reports accuracy, precision when it chooses to answer, right-title-wrong-episode separately, and mean confidence when right against when wrong. That last pair is the one that decides whether `FIRST_PASS_MODEL` is safe to turn on: if a cheaper model is as confident when it is wrong as when it is right, confidence cannot be used as an escalation threshold. `apps/server/eval-clips/README.md` covers what to put in a clip set. Every run costs one API request per clip.
+Then compare two runs:
+
+```bash
+npm run eval:compare --workspace apps/server -- \
+  apps/server/eval-clips/results-claude-opus-5-*.json \
+  apps/server/eval-clips/results-claude-sonnet-5-*.json
+```
+
+It reports accuracy, precision when it chooses to answer, right-title-wrong-episode separately, and mean confidence when right against when wrong. That last pair is the one that decides whether `FIRST_PASS_MODEL` is safe to turn on: if a cheaper model is as confident when it is wrong as when it is right, confidence cannot be used as an escalation threshold. The comparison prints that gap directly and says whether it is wide enough to threshold on, along with the clips the two models scored differently, which are the ones worth watching again yourself. `apps/server/eval-clips/README.md` covers what to put in a clip set. Every run costs one API request per clip.
 
 ## Cost
 
