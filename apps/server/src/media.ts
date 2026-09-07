@@ -90,7 +90,12 @@ export async function probe(file: string): Promise<Probe> {
   // stream #0 lets a file hide a huge stream behind a tiny one.
   let width = 0;
   let height = 0;
-  for (const m of stderr.matchAll(/Video:.*?,\s*(\d{2,6})x(\d{2,6})/g)) {
+  for (const line of stderr.split("\n")) {
+    // Cover art is a video stream ffmpeg never decodes as video, so counting it
+    // would refuse ordinary files that happen to carry a large thumbnail.
+    if (line.includes("(attached pic)")) continue;
+    const m = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(line);
+    if (!m) continue;
     const w = Number(m[1]);
     const h = Number(m[2]);
     if (w * h > width * height) {

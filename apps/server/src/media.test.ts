@@ -132,6 +132,34 @@ describe("decode guards", () => {
     await assert.rejects(assertDecodable(clipPath), /larger than this server will decode/);
   });
 
+  it("ignores cover art, which is a video stream ffmpeg never decodes as video", async () => {
+    const bin = await ffmpegBinary();
+    const cover = path.join(dir, "cover.jpg");
+    const clipPath = path.join(dir, "with-cover.mp4");
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc=size=2000x2000:rate=1", "-frames:v", "1", "-y", cover,
+    ]);
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-t", "1", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10",
+      "-i", cover,
+      "-map", "0:v", "-map", "1:v",
+      "-c:v:0", "libx264", "-pix_fmt", "yuv420p", "-c:v:1", "copy",
+      "-disposition:v:1", "attached_pic", "-y", clipPath,
+    ]);
+    const p = await probe(clipPath);
+    assert.equal(p.width, 320, "artwork must not be mistaken for the video stream");
+    // Would be refused if the 2000x2000 artwork counted towards the budget.
+    const original = config.maxPixels;
+    (config as { maxPixels: number }).maxPixels = 320 * 180;
+    try {
+      await assertDecodable(clipPath);
+    } finally {
+      (config as { maxPixels: number }).maxPixels = original;
+    }
+  });
+
   it("refuses a file it could not read at all, rather than falling through", async () => {
     // A probe that finds nothing means an unreadable file or a timed-out ffmpeg.
     // Treating that as "no dimensions, so within budget" would let it through.

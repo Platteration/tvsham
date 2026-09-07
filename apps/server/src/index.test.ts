@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
 import { app, caller, cleanClipKey, cleanHint, safeExtension } from "./index.js";
-import { getSession } from "./sessions.js";
+import { getSession, sessionCount } from "./sessions.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -173,8 +173,10 @@ describe("limits", () => {
   });
 
   it("refuses to create sessions once the ceiling is reached", async () => {
+    // Relative to whatever earlier tests left behind, so this measures the cap
+    // rather than the order the file happens to run in.
     const original = config.maxSessions;
-    (config as { maxSessions: number }).maxSessions = 2;
+    (config as { maxSessions: number }).maxSessions = sessionCount() + 2;
     const made: string[] = [];
     try {
       let refused = 0;
@@ -183,7 +185,8 @@ describe("limits", () => {
         if (res.status === 201) made.push(((await res.json()) as { sessionId: string }).sessionId);
         else if (res.status === 503) refused++;
       }
-      assert.ok(refused > 0, "expected the cap to refuse a session");
+      assert.equal(made.length, 2, "the two sessions below the cap must be created");
+      assert.equal(refused, 3, "everything above the cap must be refused");
     } finally {
       (config as { maxSessions: number }).maxSessions = original;
       for (const id of made) await app.request(`/sessions/${id}`, { method: "DELETE" });

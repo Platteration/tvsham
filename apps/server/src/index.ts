@@ -140,10 +140,19 @@ app.post("/sessions/:id/clips", async (c) => {
   // The clip key arrives as a header as well as a form field, so a retry can be
   // recognised before its 80 MB body is buffered.
   const headerKey = cleanClipKey(c.req.header("x-clip-key"));
-  if (headerKey && s.seenClipKeys.has(headerKey)) return c.json(describe(s));
+  if (headerKey && s.seenClipKeys.has(headerKey)) {
+    // The key is recorded before recognition finishes, so wait for the original
+    // to settle: otherwise a retry gets the half-written "still listening" state
+    // and the app stores that as the answer.
+    await s.busy;
+    return c.json(describe(s));
+  }
+  // Read now, while the socket is still open: the work below runs after a queue
+  // wait, by which time a disconnected client has no address to bill.
+  const billTo = caller(c);
   // An over-quota caller should not get to make us buffer the body at all. The
   // quota itself is only spent further down, once the clip is really analysed.
-  if (usage.remaining(caller(c)) <= 0) return overLimit(c, s);
+  if (usage.remaining(billTo) <= 0) return overLimit(c, s);
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
@@ -161,7 +170,7 @@ app.post("/sessions/:id/clips", async (c) => {
     if (s.clips >= MAX_CLIPS_PER_SESSION) {
       return { result: { ...describe(s), wantsMore: false, message: "Clip limit reached for this session." } };
     }
-    if (!usage.take(caller(c))) return { result: overLimitResult(s), status: 429 as const };
+    if (!usage.take(billTo)) return { result: overLimitResult(s), status: 429 as const };
     return limiter.run(async () => ({ result: await processClip(s, clip, clipKey) }));
   });
   s.busy = work.catch(() => undefined);
