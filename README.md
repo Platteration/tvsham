@@ -143,8 +143,27 @@ CI (`.github/workflows/ci.yml`) runs the typecheck, the server tests, a Metro bu
 
 ## Roadmap / known limits
 
-- Android in‑app screen capture (MediaProjection) and an iOS Broadcast Upload Extension so "My screen" doesn't need the system recorder.
-- Share‑sheet target so a screen recording can be sent to TVsham directly from the recorder's notification.
-- Speech‑to‑text is optional today; on‑screen text and visuals alone identify most content, but dialogue is the strongest signal for picking the exact episode of a long‑running show.
-- Recognition costs one Claude request per clip (frames + a few web searches). Sessions cap at four clips.
-- `FIRST_PASS_MODEL` exists to cut that cost by letting a cheaper model answer the easy clips, but the accuracy tradeoff is unmeasured here. Build an eval set from your own clips before relying on it.
+Everything below needs a device build or an outside relationship to do properly, so none of it is stubbed in the app: a half-built version would be worse than its absence.
+
+**Needs a native build to develop against**
+
+- **Share-sheet target.** Sending a screen recording or a pasted link straight into TVsham from the recorder's notification. Needs a share-intent config plugin and a custom dev client, so it cannot be built or checked under Expo Go.
+- **In-app screen capture.** Android MediaProjection and an iOS Broadcast Upload Extension would remove the "record, then pick the file" step. The extension in particular is a separate build target with its own memory limits.
+- **Song in this scene.** ShazamKit is free on Apple platforms but needs a native module; the server already extracts the audio it would use.
+- **Lock-screen and widget capture.** An iOS Control Center control and an Android Quick Settings tile. Speed is the point of this app, so this is the highest-value native item.
+
+**Needs something outside the code**
+
+- **Affiliate revenue.** TMDB's terms only permit linking to their own watch page, which is what the app does. Per-click revenue would mean a direct relationship with each streaming or rental service.
+- **Purchases.** The pieces a store would attach to already exist: `Settings.unlockedAccents` gates the accent packs, and `DAILY_CLIP_LIMIT` enforces a per-device ceiling server-side. What is missing is receipt validation, which needs a real store account. Two things worth not building: ads on the result screen, which would spoil the one moment the app exists for, and paywalling an answer after the clip was recorded, which reads as a ransom.
+- **Sync and export.** A cloud watchlist, or one-tap export to Trakt, Letterboxd or Notion. The library is device-only today and each export target is its own OAuth integration.
+
+**Open questions**
+
+- **Timestamp inside an episode.** Matching the transcript against subtitle files could say "you are 23 minutes into S3E7". Memorable, but it needs a subtitle corpus and licensing to match against.
+- **Speech-to-text is off by default.** Visuals and on-screen text identify most content; dialogue is the strongest signal for picking the exact episode of a long-running show. Turning `STT_PROVIDER` on costs another service per clip.
+- **The cost cascade is unmeasured.** `FIRST_PASS_MODEL` should cut the per-identification cost substantially, but nobody has run it against a set of real clips yet. Build that eval before trusting it.
+
+## Cost
+
+Recognition is one Claude request per clip, with frames and a few web searches, so a session of one to four clips is the unit that costs money. That shapes everything above: an unmetered public server is an open tab, which is why `DAILY_CLIP_LIMIT` and `APP_TOKEN` exist.
