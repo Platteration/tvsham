@@ -2,7 +2,7 @@
 
 **Shazam, but for video.** Point your phone at a TV, or share a screen recording from your phone, and after a few seconds TVsham tells you what you're watching and hands you the link:
 
-- a **movie**, **TV show** or **specific episode** → the Wikipedia article (episode article when one exists)
+- a **movie**, **TV show** or **specific episode** → the Wikipedia article (episode article when one exists), plus where to stream, rent or buy it and who is in it
 - a **YouTube video / Short**, **TikTok**, **Reel** → a link on the video's own platform, opened straight in that app, plus the creator's profile
 - anything you want to keep → **Save for later** in the app's library, mark as watched when you're done
 
@@ -28,6 +28,10 @@ There is no public fingerprint database for TV and film the way there is for mus
 4. Claude looks at the frames (on‑screen titles, captions, channel names, faces, sets, app UI) and the transcript, and uses **web search** to verify: a quoted line of dialogue usually pins down the exact episode; a title plus channel pins down the YouTube video.
 5. The server verifies the answer against Wikipedia's API (article summary, thumbnail) or YouTube's oEmbed (title, channel, thumbnail) so the link you get is real, and falls back to a search link when it isn't sure.
 6. If confidence is low, the app keeps listening. While one clip is being analysed the next is already recording, up to four clips (~32 s). Every clip is deleted from the server as soon as it has been analysed.
+
+### Attribution
+
+Where-to-watch and cast data come from TMDB when `TMDB_API_KEY` is set. This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## Repository layout
 
@@ -78,6 +82,8 @@ Check it: `curl http://localhost:8787/health` →
 | `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
 | `YOUTUBE_API_KEY` | – | Optional YouTube Data API v3 key for a proper search fallback. Without it, direct links are still verified via oEmbed. |
 | `WIKIPEDIA_LANG` | `en` | Wikipedia edition for article lookups. |
+| `TMDB_API_KEY` | – | Optional TMDB key. Adds "where to watch" and a cast list to film and TV results. |
+| `WATCH_REGION` | `US` | Country for watch providers when the app sends none; the app sends the device's own. |
 | `FFMPEG_PATH` | auto | Explicit ffmpeg binary. |
 
 ### API

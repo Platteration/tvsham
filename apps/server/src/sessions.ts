@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CaptureSource, Identification, ResolvedLink } from "@tvsham/shared";
+import type { CaptureSource, CastMember, Identification, ResolvedLink, WatchOption } from "@tvsham/shared";
 import { config } from "./config.js";
 import type { Evidence } from "./recognize.js";
 
@@ -12,14 +12,16 @@ export interface Session {
   /** Client-supplied keys of clips already analysed, so a retried upload is not processed twice. */
   seenClipKeys: Set<string>;
   secondsAnalysed: number;
-  last?: { identification: Identification; links: ResolvedLink[] };
+  /** ISO 3166-1 country used for "where to watch". */
+  region: string;
+  last?: { identification: Identification; links: ResolvedLink[]; watch: WatchOption[]; cast: CastMember[] };
   /** Serialises clip processing so two uploads for one session never race. */
   busy: Promise<unknown>;
 }
 
 const sessions = new Map<string, Session>();
 
-export function createSession(source: CaptureSource, hints?: string): Session {
+export function createSession(source: CaptureSource, hints?: string, region = config.defaultRegion): Session {
   const s: Session = {
     id: randomUUID(),
     createdAt: Date.now(),
@@ -28,6 +30,7 @@ export function createSession(source: CaptureSource, hints?: string): Session {
     clips: 0,
     seenClipKeys: new Set(),
     secondsAnalysed: 0,
+    region,
     busy: Promise.resolve(),
   };
   sessions.set(s.id, s);

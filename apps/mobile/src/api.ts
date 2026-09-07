@@ -4,6 +4,7 @@ import type {
   HealthResponse,
   RecognitionResult,
 } from "@tvsham/shared";
+import { getLocales } from "expo-localization";
 import { getSettings } from "./store";
 
 export class ApiError extends Error {
@@ -59,11 +60,20 @@ export async function health(timeoutMs = 6000): Promise<HealthResponse> {
   return parse<HealthResponse>(res);
 }
 
+/** The device's country, so "where to watch" lists services the user can actually use. */
+function region(): string | undefined {
+  try {
+    return getLocales()[0]?.regionCode ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function createSession(source: CaptureSource, hints?: string): Promise<string> {
   const res = await fetch(`${baseUrl()}/sessions`, {
     method: "POST",
     headers: headers({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ source, ...(hints ? { hints } : {}) }),
+    body: JSON.stringify({ source, ...(hints ? { hints } : {}), ...(region() ? { region: region() } : {}) }),
   });
   return (await parse<CreateSessionResponse>(res)).sessionId;
 }

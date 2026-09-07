@@ -70,6 +70,25 @@ export interface Identification {
   alternatives?: Array<{ title: string; kind: MediaKind; year?: number }>;
 }
 
+/** One way to watch the thing that was identified, in the user's country. */
+export interface WatchOption {
+  kind: "stream" | "rent" | "buy";
+  /** "Netflix", "Prime Video", ... */
+  service: string;
+  logoUrl?: string;
+  /** Where to go to start watching. */
+  url: string;
+}
+
+/** A person on screen. */
+export interface CastMember {
+  name: string;
+  character?: string;
+  imageUrl?: string;
+  /** Their page, when we have one. */
+  url?: string;
+}
+
 export type SessionStatus = "listening" | "identified" | "unsure" | "failed";
 
 export interface RecognitionResult {
@@ -79,6 +98,10 @@ export interface RecognitionResult {
   secondsAnalysed: number;
   identification?: Identification;
   links: ResolvedLink[];
+  /** Streaming, rental and purchase options in the requested region. Empty when unknown. */
+  watch: WatchOption[];
+  /** Top billed cast, when we could look it up. */
+  cast: CastMember[];
   /** True when the server would like another clip to raise confidence. */
   wantsMore: boolean;
   /** Human-readable hint for the UI ("Keep pointing at the screen…"). */

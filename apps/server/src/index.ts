@@ -22,6 +22,7 @@ import { extractAudio, extractFrames, ffmpegBinary, probeDuration } from "./medi
 import { recognise } from "./recognize.js";
 import { resolveLinks } from "./resolve.js";
 import { createSession, deleteSession, getSession, sweepSessions, type Session } from "./sessions.js";
+import { enrich } from "./tmdb.js";
 import { sttProvider } from "./stt.js";
 
 const app = new Hono();
@@ -65,9 +66,9 @@ app.get("/health", async (c) => {
 });
 
 app.post("/sessions", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { source?: string; hints?: string };
+  const body = (await c.req.json().catch(() => ({}))) as { source?: string; hints?: string; region?: string };
   const source: CaptureSource = body.source === "screen" ? "screen" : "camera";
-  const s = createSession(source, cleanHint(body.hints));
+  const s = createSession(source, cleanHint(body.hints), cleanRegion(body.region));
   const res: CreateSessionResponse = { sessionId: s.id };
   return c.json(res, 201);
 });
@@ -141,8 +142,11 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
     s.evidence.transcripts.push(transcript ?? "");
 
     const identification = await recognise(s.evidence);
-    const links = await resolveLinks(identification);
-    s.last = { identification, links };
+    const [links, extra] = await Promise.all([
+      resolveLinks(identification),
+      enrich(identification, s.region),
+    ]);
+    s.last = { identification, links, ...extra };
     return describe(s);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
@@ -150,7 +154,12 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
 }
 
 function describe(s: Session): RecognitionResult {
-  const base = { sessionId: s.id, secondsAnalysed: Math.round(s.secondsAnalysed) };
+  const base = {
+    sessionId: s.id,
+    secondsAnalysed: Math.round(s.secondsAnalysed),
+    watch: s.last?.watch ?? [],
+    cast: s.last?.cast ?? [],
+  };
   if (!s.last) {
     return {
       ...base,
@@ -195,6 +204,11 @@ function describe(s: Session): RecognitionResult {
       ? "Not sure yet. Try to get dialogue or on-screen text in the shot."
       : "Couldn't identify this. Try again with a clearer view or a longer clip.",
   };
+}
+
+/** A two-letter country code, or undefined so the server default applies. */
+export function cleanRegion(raw: unknown): string | undefined {
+  return typeof raw === "string" && /^[A-Za-z]{2}$/.test(raw) ? raw.toUpperCase() : undefined;
 }
 
 /** The user's optional hint: collapsed to one short single line before it reaches the model. */

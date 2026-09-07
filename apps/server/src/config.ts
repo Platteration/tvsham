@@ -23,6 +23,10 @@ export const config = {
     model: env("STT_MODEL", "whisper-1")!,
   },
   youtubeApiKey: env("YOUTUBE_API_KEY"),
+  /** Optional TMDB v3 key: adds "where to watch" and a cast list. */
+  tmdbApiKey: env("TMDB_API_KEY"),
+  /** Country used for watch providers when the app does not send one. */
+  defaultRegion: env("WATCH_REGION", "US")!,
   /** Wikipedia edition used for article lookups. */
   wikipediaLang: env("WIKIPEDIA_LANG", "en")!,
   /** Frames sampled per clip. */

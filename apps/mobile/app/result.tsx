@@ -4,7 +4,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { ConfidenceRing } from "@/motion";
-import { LinkRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
+import { CastStrip, LinkRow, WatchRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
 import { colors, radius, space } from "@/theme";
 import { Body, Button, Card, Chip, Empty, Muted, Title } from "@/ui";
@@ -70,6 +70,20 @@ export default function ResultScreen() {
           <Muted>No links found for this. Try again with dialogue or a title visible on screen.</Muted>
         </Card>
       )}
+
+      {result.watch.length > 0 ? (
+        <View style={{ gap: space.sm }}>
+          <Muted style={{ marginLeft: space.xs }}>Where to watch</Muted>
+          <WatchRow options={result.watch} />
+        </View>
+      ) : null}
+
+      {result.cast.length > 0 ? (
+        <View style={{ gap: space.sm }}>
+          <Muted style={{ marginLeft: space.xs }}>Who's in it</Muted>
+          <CastStrip cast={result.cast} />
+        </View>
+      ) : null}
 
       {id.alternatives && id.alternatives.length > 0 ? (
         <View style={{ gap: space.sm }}>

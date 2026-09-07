@@ -1,6 +1,6 @@
 import * as WebBrowser from "expo-web-browser";
-import { Image, Linking, Pressable, StyleSheet, Text, View } from "react-native";
-import type { Identification, ResolvedLink } from "@tvsham/shared";
+import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import type { CastMember, Identification, ResolvedLink, WatchOption } from "@tvsham/shared";
 import { colors, radius, space } from "./theme";
 import { Chip, Muted } from "./ui";
 
@@ -86,7 +86,89 @@ export function LinkRow({ link }: { link: ResolvedLink }) {
   );
 }
 
+const WATCH_LABEL: Record<WatchOption["kind"], string> = {
+  stream: "Streaming",
+  rent: "Rent",
+  buy: "Buy",
+};
+
+/** One service the title is available on. Tapping opens TMDB's list of providers. */
+export function WatchRow({ options }: { options: WatchOption[] }) {
+  return (
+    <View style={styles.wrapRow}>
+      {options.map((o) => (
+        <Pressable
+          key={`${o.kind}-${o.service}`}
+          onPress={() => void WebBrowser.openBrowserAsync(o.url)}
+          style={({ pressed }) => [styles.watchChip, pressed && { opacity: 0.7 }]}
+          accessibilityRole="link"
+          accessibilityLabel={`${o.service}, ${WATCH_LABEL[o.kind]}`}
+        >
+          {o.logoUrl ? <Image source={{ uri: o.logoUrl }} style={styles.watchLogo} /> : null}
+          <View>
+            <Text style={styles.watchService} numberOfLines={1}>
+              {o.service}
+            </Text>
+            <Muted style={{ fontSize: 11 }}>{WATCH_LABEL[o.kind]}</Muted>
+          </View>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+/** Who is on screen. Answers the "wait, who is that?" question without leaving the app. */
+export function CastStrip({ cast }: { cast: CastMember[] }) {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.md }}>
+      {cast.map((c) => (
+        <Pressable
+          key={`${c.name}-${c.character ?? ""}`}
+          disabled={!c.url}
+          onPress={() => c.url && void WebBrowser.openBrowserAsync(c.url)}
+          style={({ pressed }) => [styles.castCard, pressed && { opacity: 0.7 }]}
+        >
+          {c.imageUrl ? (
+            <Image source={{ uri: c.imageUrl }} style={styles.castPhoto} />
+          ) : (
+            <View style={[styles.castPhoto, styles.castPhotoEmpty]}>
+              <Text style={styles.castInitial}>{c.name.slice(0, 1)}</Text>
+            </View>
+          )}
+          <Text style={styles.castName} numberOfLines={2}>
+            {c.name}
+          </Text>
+          {c.character ? (
+            <Muted style={{ fontSize: 11 }} numberOfLines={1}>
+              {c.character}
+            </Muted>
+          ) : null}
+        </Pressable>
+      ))}
+    </ScrollView>
+  );
+}
+
 const styles = StyleSheet.create({
+  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  watchChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  watchLogo: { width: 28, height: 28, borderRadius: 6, backgroundColor: colors.surfaceAlt },
+  watchService: { color: colors.text, fontSize: 14, fontWeight: "600", maxWidth: 150 },
+  castCard: { width: 82, gap: 4 },
+  castPhoto: { width: 82, height: 104, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  castPhotoEmpty: { alignItems: "center", justifyContent: "center" },
+  castInitial: { color: colors.muted, fontSize: 28, fontWeight: "700" },
+  castName: { color: colors.text, fontSize: 12, fontWeight: "600" },
   linkRow: {
     flexDirection: "row",
     gap: space.md,
