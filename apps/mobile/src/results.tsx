@@ -82,6 +82,8 @@ export function CastStrip({ cast }: { cast: CastMember[] }) {
         <Pressable
           key={`${c.name}-${c.character ?? ""}`}
           disabled={!c.url}
+          accessibilityRole="link"
+          accessibilityLabel={c.character ? `${c.name} as ${c.character}` : c.name}
           onPress={() => c.url && void WebBrowser.openBrowserAsync(c.url)}
           style={({ pressed }) => [styles.castCard, pressed && { opacity: 0.7 }]}
         >

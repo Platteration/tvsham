@@ -3,7 +3,7 @@ import type { SavedItem } from "@tvsham/shared";
 import { clearHistory, removeSaved, saveHistoryItem, setWatched, useHistory, useLibrary } from "@/store";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Chip, Empty, Muted } from "@/ui";
-import { kindLabel, openLink, subtitleFor } from "@/results";
+import { actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 
 function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
   const styles = useStyles();
@@ -20,6 +20,9 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
     <Pressable
       onPress={() => primary && void openLink(primary)}
       onLongPress={recent ? undefined : confirmRemove}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.identification.title}${item.watched ? ", watched" : ""}`}
+      accessibilityHint={primary ? actionLabel(primary) : undefined}
       style={({ pressed }) => [styles.row, item.watched && styles.rowWatched, pressed && { opacity: 0.7 }]}
     >
       {thumb ? <Image source={{ uri: thumb }} style={styles.thumb} /> : <View style={[styles.thumb, { opacity: 0.5 }]} />}
@@ -80,7 +83,12 @@ export default function LibraryScreen() {
         <View style={styles.header}>
           <Text style={styles.headerText}>{section.title}</Text>
           {section.recent ? (
-            <Pressable hitSlop={8} onPress={() => void clearHistory()}>
+            <Pressable
+              hitSlop={8}
+              onPress={() => void clearHistory()}
+              accessibilityRole="button"
+              accessibilityLabel="Clear recent identifications"
+            >
               <Muted>Clear</Muted>
             </Pressable>
           ) : null}

@@ -95,6 +95,9 @@ export default function CaptureScreen() {
             key={m}
             disabled={busy}
             onPress={() => setMode(m)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: mode === m }}
+            accessibilityLabel={m === "camera" ? "Point at a TV" : "Identify from a screen recording"}
             style={[styles.modeTab, mode === m && styles.modeTabActive]}
           >
             <Text style={[styles.modeTabText, mode === m && styles.modeTabTextActive]}>

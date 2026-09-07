@@ -94,6 +94,8 @@ export default function ResultScreen() {
             {id.alternatives.map((a) => (
               <Pressable
                 key={`${a.title}-${a.year ?? ""}`}
+                accessibilityRole="link"
+                accessibilityLabel={`Search Wikipedia for ${a.title}`}
                 onPress={() =>
                   void WebBrowser.openBrowserAsync(
                     `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(a.year ? `${a.title} ${a.year}` : a.title)}`,
