@@ -25,10 +25,16 @@ export default function SettingsScreen() {
     try {
       await save();
       const h: HealthResponse = await health();
-      setStatus({
-        ok: true,
-        text: `Connected · v${h.version} · model ${h.model} · ffmpeg ${h.ffmpeg ? "ok" : "missing"} · speech-to-text ${h.stt}`,
-      });
+      const parts = [
+        `Connected · v${h.version}`,
+        `model ${h.model}`,
+        h.firstPassModel ? `first pass ${h.firstPassModel}` : null,
+        `ffmpeg ${h.ffmpeg ? "ok" : "missing"}`,
+        `speech-to-text ${h.stt}`,
+        h.tmdb ? "where to watch on" : "where to watch off",
+        h.dailyClipLimit > 0 ? `${h.dailyClipLimit} clips/day` : null,
+      ].filter(Boolean);
+      setStatus({ ok: true, text: parts.join(" · ") });
     } catch (err) {
       setStatus({ ok: false, text: err instanceof Error ? err.message : "Could not reach the server." });
     } finally {

@@ -70,6 +70,9 @@ app.get("/health", async (c) => {
     ffmpeg: (await ffmpegBinary()) !== null,
     stt: sttProvider().name,
     model: config.model,
+    tmdb: Boolean(config.tmdbApiKey),
+    dailyClipLimit: config.dailyClipLimit,
+    ...(config.firstPassModel ? { firstPassModel: config.firstPassModel } : {}),
   };
   return c.json(body);
 });

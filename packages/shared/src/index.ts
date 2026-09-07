@@ -121,6 +121,12 @@ export interface HealthResponse {
   ffmpeg: boolean;
   stt: string;
   model: string;
+  /** Whether where-to-watch and cast lookups are configured. */
+  tmdb: boolean;
+  /** Clips one device may analyse per day; 0 means no cap. */
+  dailyClipLimit: number;
+  /** Cheaper model used for a first pass, when one is configured. */
+  firstPassModel?: string;
 }
 
 /** An item the user saved for later, stored on the device. */

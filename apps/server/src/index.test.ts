@@ -14,9 +14,17 @@ describe("http", () => {
   it("reports health", async () => {
     const res = await app.request("/health");
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { ok: boolean; ffmpeg: boolean; model: string };
+    const body = (await res.json()) as {
+      ok: boolean;
+      ffmpeg: boolean;
+      model: string;
+      tmdb: boolean;
+      dailyClipLimit: number;
+    };
     assert.equal(body.ok, true);
     assert.equal(typeof body.model, "string");
+    assert.equal(typeof body.tmdb, "boolean");
+    assert.equal(typeof body.dailyClipLimit, "number");
   });
 
   it("creates and describes a session", async () => {
