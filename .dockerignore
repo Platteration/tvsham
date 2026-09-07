@@ -1,0 +1,21 @@
+# Never let secrets or recordings into an image layer.
+**/.env
+**/.env.*
+!**/.env.example
+apps/server/eval-clips/*
+!apps/server/eval-clips/README.md
+!apps/server/eval-clips/labels.example.json
+
+# Rebuilt inside the image; copying them in is slow and can mix architectures.
+**/node_modules
+**/dist
+apps/server/tmp
+
+# Not part of the server build at all.
+apps/mobile
+.git
+.github
+.claude
+**/*.md
+!README.md
+.expo

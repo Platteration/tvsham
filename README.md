@@ -68,6 +68,7 @@ Check it: `curl http://localhost:8787/health` →
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
 - Set `DAILY_CLIP_LIMIT` if the server is public. The app sends a random per-install id (`X-Device-Id`) that the cap counts against; callers without one are counted by address. It identifies the install and nothing about the person.
 - Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
+- The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 ### Server configuration
