@@ -14,6 +14,12 @@ export const config = {
   port: Number(env("PORT", "8787")),
   appToken: env("APP_TOKEN"),
   model: env("CLAUDE_MODEL", "claude-opus-5")!,
+  /**
+   * Optional cheaper model for a first pass. When it comes back unsure the same
+   * evidence is re-run on the main model, so only hard clips pay full price.
+   * Opt-in: measure accuracy on your own clips before turning it on.
+   */
+  firstPassModel: env("FIRST_PASS_MODEL"),
   tmpDir: path.resolve(env("TMP_DIR", "./tmp")!),
   ffmpegPath: env("FFMPEG_PATH"),
   stt: {
@@ -35,6 +41,8 @@ export const config = {
   maxClipSeconds: 60,
   /** Max upload size in bytes. */
   maxUploadBytes: 80 * 1024 * 1024,
+  /** Clips one device may have analysed per day. 0 turns the cap off. */
+  dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
   maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
   /** Sessions idle longer than this are dropped. */

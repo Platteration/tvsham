@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -19,14 +19,23 @@ import {
 import { config } from "./config.js";
 import { Limiter } from "./limiter.js";
 import { extractAudio, extractFrames, ffmpegBinary, probeDuration } from "./media.js";
-import { recognise } from "./recognize.js";
+import { recogniseWithEscalation } from "./recognize.js";
 import { resolveLinks } from "./resolve.js";
 import { createSession, deleteSession, getSession, sweepSessions, type Session } from "./sessions.js";
 import { enrich } from "./tmdb.js";
 import { sttProvider } from "./stt.js";
+import { createUsageStore } from "./usage.js";
 
 const app = new Hono();
 const limiter = new Limiter(config.maxConcurrent);
+const usage = createUsageStore(config.dailyClipLimit);
+
+/** Who to bill a clip to: the device id the app sends, else the peer address. */
+function caller(c: Context): string {
+  const device = c.req.header("x-device-id");
+  if (device && /^[A-Za-z0-9_-]{8,64}$/.test(device)) return `d:${device}`;
+  return `ip:${c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`;
+}
 app.use("*", logger());
 app.use("*", cors());
 
@@ -100,6 +109,19 @@ app.post("/sessions/:id/clips", async (c) => {
   if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
   if (clip.size < 1024) return c.json({ error: "clip is empty" }, 400);
   const clipKey = typeof form["clipKey"] === "string" ? form["clipKey"] : undefined;
+  const alreadySeen = clipKey !== undefined && s.seenClipKeys.has(clipKey);
+  // A retry of a clip we already analysed costs nothing, so it does not count.
+  if (!alreadySeen && !usage.take(caller(c))) {
+    return c.json(
+      {
+        ...describe(s),
+        status: "failed",
+        wantsMore: false,
+        message: `Daily limit of ${config.dailyClipLimit} clips reached. It resets tomorrow.`,
+      },
+      429,
+    );
+  }
 
   // Serialise per session (a second upload waits for the first) and cap global concurrency.
   // A retried upload with a key we have already analysed just returns the current answer.
@@ -141,7 +163,7 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
     s.evidence.frames.push(...frames.map((f) => ({ ...f, clip: clipIndex })));
     s.evidence.transcripts.push(transcript ?? "");
 
-    const identification = await recognise(s.evidence);
+    const identification = await recogniseWithEscalation(s.evidence);
     const [links, extra] = await Promise.all([
       resolveLinks(identification),
       enrich(identification, s.region),

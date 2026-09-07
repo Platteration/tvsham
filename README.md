@@ -66,6 +66,7 @@ Check it: `curl http://localhost:8787/health` →
 ### Deploying safely
 
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
+- Set `DAILY_CLIP_LIMIT` if the server is public. The app sends a random per-install id (`X-Device-Id`) that the cap counts against; callers without one are counted by address. It identifies the install and nothing about the person.
 - Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
@@ -78,6 +79,8 @@ Check it: `curl http://localhost:8787/health` →
 | `PORT` | `8787` | Listen port. |
 | `APP_TOKEN` | – | If set, the app must send it as a bearer token (enter it in Settings). |
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
+| `DAILY_CLIP_LIMIT` | `0` (off) | Clips one device may have analysed per day. In-memory, so it resets on restart. |
+| `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
 | `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
 | `YOUTUBE_API_KEY` | – | Optional YouTube Data API v3 key for a proper search fallback. Without it, direct links are still verified via oEmbed. |
@@ -138,3 +141,4 @@ CI (`.github/workflows/ci.yml`) runs the typecheck, the server tests, a Metro bu
 - Share‑sheet target so a screen recording can be sent to TVsham directly from the recorder's notification.
 - Speech‑to‑text is optional today; on‑screen text and visuals alone identify most content, but dialogue is the strongest signal for picking the exact episode of a long‑running show.
 - Recognition costs one Claude request per clip (frames + a few web searches). Sessions cap at four clips.
+- `FIRST_PASS_MODEL` exists to cut that cost by letting a cheaper model answer the easy clips, but the accuracy tradeoff is unmeasured here. Build an eval set from your own clips before relying on it.

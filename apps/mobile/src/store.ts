@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
+import * as Crypto from "expo-crypto";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 
@@ -33,6 +34,7 @@ export interface Settings {
 const SETTINGS_KEY = "tvsham.settings.v1";
 const LIBRARY_KEY = "tvsham.library.v1";
 const HISTORY_KEY = "tvsham.history.v1";
+const DEVICE_KEY = "tvsham.device.v1";
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
@@ -56,13 +58,33 @@ export interface LastResult {
 }
 const lastResultStore = createStore<LastResult | null>(null);
 
+/**
+ * A random per-install id sent with uploads so a server with a daily cap can
+ * count per device. It identifies the install, nothing about the person.
+ */
+let deviceId = "";
+
+export function getDeviceId(): string {
+  return deviceId;
+}
+
+function newDeviceId(): string {
+  const bytes = Crypto.getRandomBytes(16);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 let hydrating: Promise<void> | null = null;
 
 export function hydrate(): Promise<void> {
   if (hydrating) return hydrating;
   hydrating = (async () => {
     try {
-      const [s, l, h] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY, HISTORY_KEY]);
+      const [s, l, h, d] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY, HISTORY_KEY, DEVICE_KEY]);
+      deviceId = d?.[1] ?? "";
+      if (!deviceId) {
+        deviceId = newDeviceId();
+        await AsyncStorage.setItem(DEVICE_KEY, deviceId);
+      }
       const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
       if (savedSettings) settingsStore.set((prev) => ({ ...prev, ...savedSettings }));
       const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;

@@ -5,7 +5,7 @@ import type {
   RecognitionResult,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
-import { getSettings } from "./store";
+import { getDeviceId, getSettings } from "./store";
 
 export class ApiError extends Error {
   constructor(
@@ -27,6 +27,8 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
   const h: Record<string, string> = { ...extra };
   const token = getSettings().token.trim();
   if (token) h.Authorization = `Bearer ${token}`;
+  const device = getDeviceId();
+  if (device) h["X-Device-Id"] = device;
   return h;
 }
 

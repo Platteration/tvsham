@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import type { CaptureSource, Identification, MediaKind, VideoPlatform } from "@tvsham/shared";
+import { CONFIDENT_THRESHOLD, type CaptureSource, type Identification, type MediaKind, type VideoPlatform } from "@tvsham/shared";
 import { config } from "./config.js";
 import type { ExtractedFrame } from "./media.js";
 
@@ -120,7 +120,8 @@ function buildUserContent(ev: Evidence): Anthropic.Beta.BetaContentBlockParam[] 
  * Step 1: reason over frames + transcript with web search. Step 2: extract JSON.
  * Two calls because server tools and structured outputs are best kept apart.
  */
-export async function recognise(ev: Evidence): Promise<Identification> {
+export async function recognise(ev: Evidence, opts: { model?: string } = {}): Promise<Identification> {
+  const model = opts.model ?? config.model;
   if (ev.frames.length === 0) {
     return {
       kind: "unknown",
@@ -137,7 +138,7 @@ export async function recognise(ev: Evidence): Promise<Identification> {
   let analysis = "";
   for (let attempt = 0; attempt < 4; attempt++) {
     const response = await client.beta.messages.create({
-      model: config.model,
+      model,
       max_tokens: 16000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
@@ -168,7 +169,7 @@ export async function recognise(ev: Evidence): Promise<Identification> {
   }
 
   const parsed = await client.messages.parse({
-    model: config.model,
+    model,
     max_tokens: 2000,
     output_config: { effort: "low", format: zodOutputFormat(IdentificationSchema) },
     messages: [
@@ -223,4 +224,23 @@ export function toIdentification(o: z.infer<typeof IdentificationSchema>): Ident
     }));
   }
   return id;
+}
+
+/**
+ * Recognise a clip, cheaply when we can. With FIRST_PASS_MODEL set, a cheaper
+ * model looks first and the main model only re-reads the same evidence when that
+ * first answer is not confident enough to act on. No extra recording is needed,
+ * so the user never waits longer for a confident answer.
+ */
+export async function recogniseWithEscalation(ev: Evidence): Promise<Identification> {
+  const first = config.firstPassModel;
+  if (!first || first === config.model) return recognise(ev);
+
+  const cheap = await recognise(ev, { model: first });
+  if (cheap.confidence >= CONFIDENT_THRESHOLD && cheap.kind !== "unknown") return cheap;
+
+  const strong = await recognise(ev, { model: config.model });
+  // Keep whichever pass was more sure; the cheap one is sometimes right about a
+  // clip the bigger model also finds hard.
+  return strong.confidence >= cheap.confidence ? strong : cheap;
 }

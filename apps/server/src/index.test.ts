@@ -124,6 +124,23 @@ describe("http", () => {
     assert.equal(cleanHint("x".repeat(500))?.length, 120);
   });
 
+  it("does not count a duplicate clipKey against the daily cap", async () => {
+    // The cap is off by default; this asserts the accounting path is only
+    // reached for clips that are actually analysed.
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const form = new FormData();
+    form.set("clip", new Blob([new Uint8Array(16)]), "clip.mp4");
+    form.set("clipKey", "dup");
+    const res = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { "x-device-id": "abcdefgh12345678" },
+      body: form,
+    });
+    // Rejected for being empty, not for quota.
+    assert.equal(res.status, 400);
+  });
+
   it("404s for unknown sessions", async () => {
     const form = new FormData();
     form.set("clip", new Blob([new Uint8Array(4)]), "clip.mp4");

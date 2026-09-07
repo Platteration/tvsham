@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { recognise, setClientForTests, type Evidence } from "./recognize.js";
+import { config } from "./config.js";
+import { recognise, recogniseWithEscalation, setClientForTests, type Evidence } from "./recognize.js";
 
 function evidence(): Evidence {
   return {
@@ -18,7 +19,7 @@ interface FakeCalls {
 
 function fakeClient(opts: {
   createResponses: Array<{ stop_reason: string; content: unknown[] }>;
-  parsed: unknown;
+  parsed: unknown | ((call: number) => unknown);
 }): { client: Anthropic; calls: FakeCalls } {
   const calls: FakeCalls = { create: [], parse: [] };
   const responses = [...opts.createResponses];
@@ -32,9 +33,10 @@ function fakeClient(opts: {
       },
     },
     messages: {
-      parse: async (params: FakeCalls["parse"][number]) => {
+      parse: async (params: FakeCalls["parse"][number] & { model?: string }) => {
         calls.parse.push(params);
-        return { parsed_output: opts.parsed };
+        const out = typeof opts.parsed === "function" ? (opts.parsed as (n: number) => unknown)(calls.parse.length) : opts.parsed;
+        return { parsed_output: out };
       },
     },
   } as unknown as Anthropic;
@@ -110,5 +112,59 @@ describe("recognise flow", () => {
     const id = await recognise({ ...evidence(), frames: [] });
     assert.equal(id.kind, "unknown");
     assert.equal(calls.create.length, 0);
+  });
+});
+
+describe("cheap first pass", () => {
+  const originalFirst = config.firstPassModel;
+  const setFirst = (v: string | undefined) => {
+    (config as { firstPassModel?: string }).firstPassModel = v;
+  };
+  afterEach(() => {
+    setClientForTests(null);
+    setFirst(originalFirst);
+  });
+
+  const ok = { stop_reason: "end_turn", content: [{ type: "text", text: "analysis" }] };
+  const modelsUsed = (calls: FakeCalls) => calls.create.map((c) => (c as { model?: string }).model);
+
+  it("stops after the cheap model when it is confident", async () => {
+    setFirst("claude-sonnet-5");
+    const { client, calls } = fakeClient({ createResponses: [ok, ok], parsed: { ...parsed, confidence: 0.9 } });
+    setClientForTests(client);
+    const id = await recogniseWithEscalation(evidence());
+    assert.equal(calls.create.length, 1);
+    assert.deepEqual(modelsUsed(calls), ["claude-sonnet-5"]);
+    assert.equal(id.confidence, 0.9);
+  });
+
+  it("re-reads the same evidence on the main model when the cheap pass is unsure", async () => {
+    setFirst("claude-sonnet-5");
+    const { client, calls } = fakeClient({
+      createResponses: [ok, ok],
+      parsed: (n) => ({ ...parsed, confidence: n === 1 ? 0.4 : 0.95 }),
+    });
+    setClientForTests(client);
+    const id = await recogniseWithEscalation(evidence());
+    assert.deepEqual(modelsUsed(calls), ["claude-sonnet-5", config.model]);
+    assert.equal(id.confidence, 0.95);
+  });
+
+  it("keeps the cheap answer when the main model is even less sure", async () => {
+    setFirst("claude-sonnet-5");
+    const { client } = fakeClient({
+      createResponses: [ok, ok],
+      parsed: (n) => ({ ...parsed, confidence: n === 1 ? 0.5 : 0.2 }),
+    });
+    setClientForTests(client);
+    assert.equal((await recogniseWithEscalation(evidence())).confidence, 0.5);
+  });
+
+  it("makes one call when no cheap model is configured", async () => {
+    setFirst(undefined);
+    const { client, calls } = fakeClient({ createResponses: [ok], parsed: { ...parsed, confidence: 0.1 } });
+    setClientForTests(client);
+    await recogniseWithEscalation(evidence());
+    assert.deepEqual(modelsUsed(calls), [config.model]);
   });
 });
