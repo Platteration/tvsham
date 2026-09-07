@@ -1,7 +1,7 @@
 import * as WebBrowser from "expo-web-browser";
 import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { CastMember, Identification, ResolvedLink, WatchOption } from "@tvsham/shared";
-import { colors, radius, space } from "./theme";
+import { makeStyles, radius, space, useTheme, type Palette } from "./theme";
 import { Chip, Muted } from "./ui";
 
 export function kindLabel(kind: Identification["kind"]): string {
@@ -44,13 +44,20 @@ export async function openLink(link: ResolvedLink): Promise<void> {
   await WebBrowser.openBrowserAsync(link.url, { presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET });
 }
 
-const PROVIDER_BADGE: Record<ResolvedLink["provider"], { label: string; color: string; text: string }> = {
-  wikipedia: { label: "Wikipedia", color: colors.wikipedia, text: "#111" },
-  youtube: { label: "YouTube", color: colors.youtube, text: "#fff" },
-  tiktok: { label: "TikTok", color: colors.tiktok, text: "#111" },
-  instagram: { label: "Instagram", color: colors.instagram, text: "#fff" },
-  web: { label: "Web", color: colors.surfaceAlt, text: colors.text },
-};
+function providerBadge(c: Palette, provider: ResolvedLink["provider"]): { label: string; color: string; text: string } {
+  switch (provider) {
+    case "wikipedia":
+      return { label: "Wikipedia", color: c.wikipedia, text: "#111" };
+    case "youtube":
+      return { label: "YouTube", color: c.youtube, text: "#fff" };
+    case "tiktok":
+      return { label: "TikTok", color: c.tiktok, text: "#111" };
+    case "instagram":
+      return { label: "Instagram", color: c.instagram, text: "#fff" };
+    default:
+      return { label: "Web", color: c.surfaceAlt, text: c.text };
+  }
+}
 
 /** The verb for the button that opens this link. */
 export function actionLabel(link: ResolvedLink): string {
@@ -60,7 +67,9 @@ export function actionLabel(link: ResolvedLink): string {
 }
 
 export function LinkRow({ link }: { link: ResolvedLink }) {
-  const badge = PROVIDER_BADGE[link.provider];
+  const c = useTheme();
+  const styles = useStyles();
+  const badge = providerBadge(c, link.provider);
   return (
     <Pressable
       accessibilityRole="link"
@@ -94,6 +103,7 @@ const WATCH_LABEL: Record<WatchOption["kind"], string> = {
 
 /** One service the title is available on. Tapping opens TMDB's list of providers. */
 export function WatchRow({ options }: { options: WatchOption[] }) {
+  const styles = useStyles();
   return (
     <View style={styles.wrapRow}>
       {options.map((o) => (
@@ -119,6 +129,7 @@ export function WatchRow({ options }: { options: WatchOption[] }) {
 
 /** Who is on screen. Answers the "wait, who is that?" question without leaving the app. */
 export function CastStrip({ cast }: { cast: CastMember[] }) {
+  const styles = useStyles();
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.md }}>
       {cast.map((c) => (
@@ -149,37 +160,37 @@ export function CastStrip({ cast }: { cast: CastMember[] }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
   watchChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    backgroundColor: colors.surface,
+    backgroundColor: c.surface,
     borderRadius: radius.md,
     paddingVertical: space.sm,
     paddingHorizontal: space.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderColor: c.border,
   },
-  watchLogo: { width: 28, height: 28, borderRadius: 6, backgroundColor: colors.surfaceAlt },
-  watchService: { color: colors.text, fontSize: 14, fontWeight: "600", maxWidth: 150 },
+  watchLogo: { width: 28, height: 28, borderRadius: 6, backgroundColor: c.surfaceAlt },
+  watchService: { color: c.text, fontSize: 14, fontWeight: "600", maxWidth: 150 },
   castCard: { width: 82, gap: 4 },
-  castPhoto: { width: 82, height: 104, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  castPhoto: { width: 82, height: 104, borderRadius: radius.sm, backgroundColor: c.surfaceAlt },
   castPhotoEmpty: { alignItems: "center", justifyContent: "center" },
-  castInitial: { color: colors.muted, fontSize: 28, fontWeight: "700" },
-  castName: { color: colors.text, fontSize: 12, fontWeight: "600" },
+  castInitial: { color: c.muted, fontSize: 28, fontWeight: "700" },
+  castName: { color: c.text, fontSize: 12, fontWeight: "600" },
   linkRow: {
     flexDirection: "row",
     gap: space.md,
     alignItems: "center",
-    backgroundColor: colors.surface,
+    backgroundColor: c.surface,
     borderRadius: radius.md,
     padding: space.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderColor: c.border,
   },
-  linkThumb: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  linkThumb: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: c.surfaceAlt },
   linkThumbEmpty: { opacity: 0.6 },
-  linkTitle: { color: colors.text, fontSize: 15, fontWeight: "600" },
-});
+  linkTitle: { color: c.text, fontSize: 15, fontWeight: "600" },
+}));

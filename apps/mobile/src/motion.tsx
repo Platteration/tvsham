@@ -1,13 +1,14 @@
 import { useEffect, useRef } from "react";
 import { Animated, Easing, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { colors } from "./theme";
+import { makeStyles, useTheme } from "./theme";
 
 /**
  * Sonar rings that expand out of the capture button while a clip is being taken.
  * Three rings on a staggered loop; native-driven so the camera preview stays smooth.
  */
 export function SonarRings({ size, active }: { size: number; active: boolean }) {
+  const c = useTheme();
   const rings = useRef([0, 1, 2].map(() => new Animated.Value(0))).current;
 
   useEffect(() => {
@@ -49,7 +50,7 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
               height: size,
               borderRadius: size / 2,
               borderWidth: 2,
-              borderColor: colors.accent,
+              borderColor: c.accent,
             },
             {
               opacity: value.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.5, 0] }),
@@ -101,14 +102,15 @@ export function ConfidenceRing({
   stroke?: number;
   children?: React.ReactNode;
 }) {
+  const c = useTheme();
   const clamped = Math.max(0, Math.min(1, value));
   const r = (size - stroke) / 2;
   const circumference = 2 * Math.PI * r;
-  const colour = clamped >= 0.7 ? colors.success : clamped >= 0.35 ? colors.warning : colors.danger;
+  const colour = clamped >= 0.7 ? c.success : clamped >= 0.35 ? c.warning : c.danger;
   return (
     <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
       <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
-        <Circle cx={size / 2} cy={size / 2} r={r} stroke={colors.border} strokeWidth={stroke} fill="none" />
+        <Circle cx={size / 2} cy={size / 2} r={r} stroke={c.border} strokeWidth={stroke} fill="none" />
         <Circle
           cx={size / 2}
           cy={size / 2}
@@ -128,6 +130,7 @@ export function ConfidenceRing({
 
 /** Corner brackets that frame the screen the user should be pointing at. */
 export function ViewfinderFrame() {
+  const styles = useStyles();
   const corners: Array<StyleProp<ViewStyle>> = [
     { top: 0, left: 0, borderLeftWidth: 3, borderTopWidth: 3, borderTopLeftRadius: 12 },
     { top: 0, right: 0, borderRightWidth: 3, borderTopWidth: 3, borderTopRightRadius: 12 },
@@ -143,7 +146,7 @@ export function ViewfinderFrame() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   viewfinder: { position: "absolute", top: "16%", left: "6%", right: "6%", bottom: "30%" },
-  corner: { position: "absolute", width: 34, height: 34, borderColor: "rgba(255,255,255,0.75)" },
-});
+  corner: { position: "absolute", width: 34, height: 34, borderColor: c.onCamera },
+}));

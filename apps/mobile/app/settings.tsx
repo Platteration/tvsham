@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import type { HealthResponse } from "@tvsham/shared";
 import { health } from "@/api";
 import { updateSettings, useSettings } from "@/store";
-import { colors, radius, space } from "@/theme";
+import { ACCENTS, ACCENT_NAMES, makeStyles, radius, space, useTheme, type AccentName, type Appearance } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 
 export default function SettingsScreen() {
+  const styles = useStyles();
+  const c = useTheme();
   const settings = useSettings();
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
   const [token, setToken] = useState(settings.token);
@@ -47,7 +49,7 @@ export default function SettingsScreen() {
             value={serverUrl}
             onChangeText={setServerUrl}
             placeholder="http://192.168.1.20:8787"
-            placeholderTextColor={colors.muted}
+            placeholderTextColor={c.muted}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
@@ -59,7 +61,7 @@ export default function SettingsScreen() {
             value={token}
             onChangeText={setToken}
             placeholder="Matches APP_TOKEN on the server"
-            placeholderTextColor={colors.muted}
+            placeholderTextColor={c.muted}
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
@@ -71,8 +73,52 @@ export default function SettingsScreen() {
             <Button label="Test connection" loading={testing} onPress={() => void test()} style={{ flex: 1 }} />
           </View>
           {status ? (
-            <Text style={[styles.status, { color: status.ok ? colors.success : colors.danger }]}>{status.text}</Text>
+            <Text style={[styles.status, { color: status.ok ? c.success : c.danger }]}>{status.text}</Text>
           ) : null}
+        </Card>
+
+        <Card>
+          <Title>Appearance</Title>
+          <Muted style={{ marginTop: space.xs }}>
+            Follow the system, or pin one. The camera screen stays dark either way.
+          </Muted>
+          <View style={styles.segment}>
+            {(["system", "light", "dark"] as Appearance[]).map((a) => (
+              <Pressable
+                key={a}
+                onPress={() => void updateSettings({ appearance: a })}
+                style={[styles.segmentTab, settings.appearance === a && styles.segmentTabActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: settings.appearance === a }}
+              >
+                <Text style={[styles.segmentText, settings.appearance === a && styles.segmentTextActive]}>
+                  {a === "system" ? "System" : a === "light" ? "Light" : "Dark"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <Text style={styles.label}>Accent</Text>
+          <View style={styles.swatchRow}>
+            {ACCENT_NAMES.map((name: AccentName) => {
+              const owned = settings.unlockedAccents.includes(name);
+              const selected = settings.accent === name;
+              return (
+                <Pressable
+                  key={name}
+                  disabled={!owned}
+                  onPress={() => void updateSettings({ accent: name })}
+                  style={[styles.swatch, selected && { borderColor: c.text }, !owned && { opacity: 0.4 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={ACCENTS[name].label}
+                  accessibilityState={{ selected }}
+                >
+                  <View style={[styles.swatchDot, { backgroundColor: ACCENTS[name].accent }]} />
+                  <Muted style={{ fontSize: 12 }}>{ACCENTS[name].label}</Muted>
+                </Pressable>
+              );
+            })}
+          </View>
         </Card>
 
         <Card>
@@ -86,18 +132,41 @@ export default function SettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   container: { padding: space.lg, gap: space.lg },
-  label: { color: colors.muted, fontSize: 13, fontWeight: "600", marginTop: space.lg, marginBottom: space.xs },
+  label: { color: c.muted, fontSize: 13, fontWeight: "600", marginTop: space.lg, marginBottom: space.xs },
   input: {
-    backgroundColor: colors.surfaceAlt,
-    color: colors.text,
+    backgroundColor: c.surfaceAlt,
+    color: c.text,
     borderRadius: radius.sm,
     paddingHorizontal: space.md,
     paddingVertical: 12,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: c.border,
   },
   status: { marginTop: space.md, fontSize: 13, lineHeight: 18 },
-});
+  segment: {
+    flexDirection: "row",
+    marginTop: space.md,
+    backgroundColor: c.surfaceAlt,
+    borderRadius: radius.pill,
+    padding: 4,
+  },
+  segmentTab: { flex: 1, paddingVertical: 8, borderRadius: radius.pill, alignItems: "center" },
+  segmentTabActive: { backgroundColor: c.surface },
+  segmentText: { color: c.muted, fontWeight: "600", fontSize: 14 },
+  segmentTextActive: { color: c.text },
+  swatchRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  swatch: {
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    borderColor: c.border,
+    minWidth: 84,
+  },
+  swatchDot: { width: 26, height: 26, borderRadius: 13 },
+}));

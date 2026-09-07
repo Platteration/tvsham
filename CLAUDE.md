@@ -8,7 +8,8 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 
 - `apps/mobile` – Expo SDK 57, expo-router. Screens in `app/`, logic in `src/`
   (`useIdentify.ts` is the record → upload → repeat loop; `store.ts` holds settings and the
-  saved library; `api.ts` talks to the server). Path alias `@/` → `src/`.
+  saved library; `api.ts` talks to the server; `theme.tsx` owns the light/dark palettes).
+  Path alias `@/` → `src/`.
 - `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
   Claude, `resolve.ts` Wikipedia/YouTube, `stt.ts` optional speech-to-text, `sessions.ts`
   in-memory session store.
@@ -36,6 +37,9 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
   `npx expo export` for the app bundle.
 
 ## Things that trip people up
+
+- Never import a colour constant directly: use `useTheme()` for inline colours and
+  `makeStyles((c) => ...)` for stylesheets, or the screen will be stuck in one scheme.
 
 - iOS ignores `videoQuality` on `recordAsync` unless a `codec` is passed.
 - expo-router 57 vendors react-navigation; import `ThemeProvider`/`DarkTheme` from

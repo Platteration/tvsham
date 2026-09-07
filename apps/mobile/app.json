@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "scheme": "tvsham",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "backgroundColor": "#0b0b10",
     "ios": {
@@ -16,7 +16,8 @@
         "NSMicrophoneUsageDescription": "TVsham records a few seconds of audio so dialogue can help identify the show.",
         "NSPhotoLibraryUsageDescription": "TVsham reads a screen recording you pick so it can identify the video in it.",
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "userInterfaceStyle": "automatic"
     },
     "android": {
       "package": "com.platteration.tvsham",
@@ -29,7 +30,8 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0b0b10"
-      }
+      },
+      "userInterfaceStyle": "automatic"
     },
     "plugins": [
       "expo-router",

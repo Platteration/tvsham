@@ -6,10 +6,12 @@ import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { ConfidenceRing } from "@/motion";
 import { CastStrip, LinkRow, WatchRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
-import { colors, radius, space } from "@/theme";
+import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Body, Button, Card, Chip, Empty, Muted, Title } from "@/ui";
 
 export default function ResultScreen() {
+  const styles = useStyles();
+  const c = useTheme();
   const last = useLastResult();
   const library = useLibrary();
   const router = useRouter();
@@ -38,7 +40,7 @@ export default function ResultScreen() {
         <View style={{ flexDirection: "row", gap: space.md, alignItems: "center" }}>
           <ConfidenceRing value={id.confidence} />
           <View style={{ flex: 1, gap: space.xs }}>
-            <Chip label={kindLabel(id.kind)} color={colors.accent} textColor={colors.accentText} />
+            <Chip label={kindLabel(id.kind)} color={c.accent} textColor={c.accentText} />
             <Muted>
               {confident ? "Confident match" : result.status === "unsure" ? "Best guess" : "Low confidence"}
             </Muted>
@@ -51,7 +53,7 @@ export default function ResultScreen() {
           </View>
         ) : null}
         <Title style={{ marginTop: space.md }}>{id.title}</Title>
-        {subtitleFor(id) ? <Body style={{ color: colors.muted, marginTop: 2 }}>{subtitleFor(id)}</Body> : null}
+        {subtitleFor(id) ? <Body style={{ color: c.muted, marginTop: 2 }}>{subtitleFor(id)}</Body> : null}
         <Muted style={{ marginTop: space.md }}>{id.evidence}</Muted>
         <Muted style={{ marginTop: space.xs, fontSize: 12 }}>
           {source === "camera" ? "From the camera" : "From a screen recording"} · {result.secondsAnalysed}s analysed
@@ -120,7 +122,7 @@ export default function ResultScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   container: { padding: space.lg, gap: space.lg, paddingBottom: space.xl * 2 },
   heroWrap: {
     width: "100%",
@@ -128,8 +130,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     marginTop: space.md,
     overflow: "hidden",
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: c.surfaceAlt,
   },
   heroBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, opacity: 0.55 },
   heroImage: { width: "100%", height: "100%" },
-});
+}));

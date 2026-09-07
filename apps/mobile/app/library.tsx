@@ -1,11 +1,13 @@
 import { Alert, Image, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 import type { SavedItem } from "@tvsham/shared";
 import { clearHistory, removeSaved, saveHistoryItem, setWatched, useHistory, useLibrary } from "@/store";
-import { colors, radius, space } from "@/theme";
+import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Chip, Empty, Muted } from "@/ui";
 import { actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 
 function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
+  const styles = useStyles();
+  const c = useTheme();
   const primary = item.links[0];
   const thumb = item.links.find((l) => l.imageUrl)?.imageUrl;
   const confirmRemove = () =>
@@ -24,7 +26,7 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
       <View style={{ flex: 1, gap: 4 }}>
         <View style={{ flexDirection: "row", gap: space.sm, alignItems: "center" }}>
           <Chip label={kindLabel(item.identification.kind)} />
-          {item.watched ? <Chip label="Watched" color={colors.success} textColor="#111" /> : null}
+          {item.watched ? <Chip label="Watched" color={c.success} textColor="#111" /> : null}
         </View>
         <Text style={styles.title} numberOfLines={2}>
           {item.identification.title}
@@ -54,6 +56,7 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
 }
 
 export default function LibraryScreen() {
+  const styles = useStyles();
   const saved = useLibrary();
   const history = useHistory();
   const savedIds = new Set(saved.map((i) => i.id));
@@ -90,19 +93,19 @@ export default function LibraryScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: space.xs },
-  headerText: { color: colors.muted, fontSize: 13, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.6 },
+  headerText: { color: c.muted, fontSize: 13, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.6 },
   row: {
     flexDirection: "row",
     gap: space.md,
-    backgroundColor: colors.surface,
+    backgroundColor: c.surface,
     borderRadius: radius.md,
     padding: space.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderColor: c.border,
   },
   rowWatched: { opacity: 0.75 },
-  thumb: { width: 72, height: 72, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
-  title: { color: colors.text, fontSize: 16, fontWeight: "700" },
-});
+  thumb: { width: 72, height: 72, borderRadius: radius.sm, backgroundColor: c.surfaceAlt },
+  title: { color: c.text, fontSize: 16, fontWeight: "700" },
+}));

@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
+import { ACCENT_NAMES, isAccentName, type AccentName, type Appearance } from "./theme";
 
 /* ----------------------------- tiny store core ---------------------------- */
 
@@ -29,6 +30,12 @@ function createStore<T>(initial: T) {
 export interface Settings {
   serverUrl: string;
   token: string;
+  /** Follow the system, or pin light / dark. */
+  appearance: Appearance;
+  /** Which accent pack the app draws with. */
+  accent: AccentName;
+  /** Accent packs the user owns. "midnight" ships with the app. */
+  unlockedAccents: AccentName[];
 }
 
 const SETTINGS_KEY = "tvsham.settings.v1";
@@ -46,7 +53,13 @@ function defaultServerUrl(): string {
   return host ? `http://${host}:8787` : "";
 }
 
-const settingsStore = createStore<Settings>({ serverUrl: defaultServerUrl(), token: "" });
+const settingsStore = createStore<Settings>({
+  serverUrl: defaultServerUrl(),
+  token: "",
+  appearance: "system",
+  accent: "midnight",
+  unlockedAccents: [...ACCENT_NAMES],
+});
 const libraryStore = createStore<SavedItem[]>([]);
 const historyStore = createStore<SavedItem[]>([]);
 const hydrated = createStore<boolean>(false);
@@ -86,7 +99,7 @@ export function hydrate(): Promise<void> {
         await AsyncStorage.setItem(DEVICE_KEY, deviceId);
       }
       const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
-      if (savedSettings) settingsStore.set((prev) => ({ ...prev, ...savedSettings }));
+      if (savedSettings) settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings }));
       const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
       if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
       const savedHistory = h?.[1] ? (JSON.parse(h[1]) as SavedItem[]) : null;
@@ -100,6 +113,22 @@ export function hydrate(): Promise<void> {
   return hydrating;
 }
 
+/**
+ * Stored settings come from an older version of the app as often as not, so
+ * anything that drives a colour lookup is checked before it is trusted.
+ */
+function sanitise(s: Settings): Settings {
+  const unlocked = Array.isArray(s.unlockedAccents) ? s.unlockedAccents.filter(isAccentName) : [];
+  const accent: AccentName = isAccentName(s.accent) ? s.accent : "midnight";
+  return {
+    serverUrl: typeof s.serverUrl === "string" ? s.serverUrl : "",
+    token: typeof s.token === "string" ? s.token : "",
+    appearance: s.appearance === "light" || s.appearance === "dark" ? s.appearance : "system",
+    accent,
+    unlockedAccents: unlocked.length > 0 ? unlocked : [...ACCENT_NAMES],
+  };
+}
+
 export const getSettings = settingsStore.get;
 
 export function useSettings(): Settings {
@@ -107,7 +136,7 @@ export function useSettings(): Settings {
 }
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  settingsStore.set((prev) => ({ ...prev, ...patch }));
+  settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settingsStore.get()));
 }
 

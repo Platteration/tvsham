@@ -1,35 +1,42 @@
 import { DarkTheme, Stack, ThemeProvider } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
-import { hydrate } from "@/store";
-import { colors } from "@/theme";
-
-const theme = {
-  ...DarkTheme,
-  colors: {
-    ...DarkTheme.colors,
-    primary: colors.accent,
-    background: colors.bg,
-    card: colors.bg,
-    text: colors.text,
-    border: colors.border,
-  },
-};
+import { useColorScheme } from "react-native";
+import { hydrate, useSettings } from "@/store";
+import { useTheme } from "@/theme";
 
 export default function RootLayout() {
+  const c = useTheme();
+  const { appearance } = useSettings();
+  const system = useColorScheme();
+  const dark = appearance === "system" ? system !== "light" : appearance === "dark";
+
   useEffect(() => {
     void hydrate();
   }, []);
 
+  const theme = {
+    ...DarkTheme,
+    dark,
+    colors: {
+      ...DarkTheme.colors,
+      primary: c.accent,
+      background: c.bg,
+      card: c.bg,
+      text: c.text,
+      border: c.border,
+    },
+  };
+
   return (
     <ThemeProvider value={theme}>
-      <StatusBar style="light" />
+      <StatusBar style={dark ? "light" : "dark"} />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: colors.bg },
-          headerTintColor: colors.text,
+          headerStyle: { backgroundColor: c.bg },
+          headerTintColor: c.text,
           headerShadowVisible: false,
-          contentStyle: { backgroundColor: colors.bg },
+          contentStyle: { backgroundColor: c.bg },
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />

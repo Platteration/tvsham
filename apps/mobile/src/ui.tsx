@@ -6,12 +6,12 @@ import {
   Text,
   View,
   type PressableProps,
-  type TextProps,
   type StyleProp,
+  type TextProps,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { colors, radius, space } from "./theme";
+import { makeStyles, space, useTheme, type Palette } from "./theme";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
@@ -24,19 +24,23 @@ interface ButtonProps extends Omit<PressableProps, "style" | "children"> {
   compact?: boolean;
 }
 
+function buttonColors(c: Palette, variant: Variant): { bg: string; fg: string } {
+  switch (variant) {
+    case "primary":
+      return { bg: c.accent, fg: c.accentText };
+    case "secondary":
+      return { bg: c.surfaceAlt, fg: c.text };
+    case "ghost":
+      return { bg: "transparent", fg: c.muted };
+    case "danger":
+      return { bg: c.danger, fg: "#ffffff" };
+  }
+}
+
 export function Button({ label, variant = "primary", loading, icon, style, compact, disabled, ...rest }: ButtonProps) {
-  const bg: Record<Variant, string> = {
-    primary: colors.accent,
-    secondary: colors.surfaceAlt,
-    ghost: "transparent",
-    danger: colors.danger,
-  };
-  const fg: Record<Variant, string> = {
-    primary: colors.accentText,
-    secondary: colors.text,
-    ghost: colors.muted,
-    danger: colors.accentText,
-  };
+  const c = useTheme();
+  const styles = useStyles();
+  const { bg, fg } = buttonColors(c, variant);
   return (
     <Pressable
       accessibilityRole="button"
@@ -44,26 +48,29 @@ export function Button({ label, variant = "primary", loading, icon, style, compa
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
-        { backgroundColor: bg[variant], opacity: pressed || disabled ? 0.7 : 1 },
-        variant === "ghost" && { borderWidth: 1, borderColor: colors.border },
+        { backgroundColor: bg, opacity: pressed || disabled ? 0.7 : 1 },
+        variant === "ghost" && { borderWidth: 1, borderColor: c.border },
         style,
       ]}
       {...rest}
     >
-      {loading ? <ActivityIndicator color={fg[variant]} /> : icon}
-      <Text style={[styles.buttonLabel, compact && styles.buttonLabelCompact, { color: fg[variant] }]}>{label}</Text>
+      {loading ? <ActivityIndicator color={fg} /> : icon}
+      <Text style={[styles.buttonLabel, compact && styles.buttonLabelCompact, { color: fg }]}>{label}</Text>
     </Pressable>
   );
 }
 
 export function Card({ children, style }: PropsWithChildren<{ style?: StyleProp<ViewStyle> }>) {
+  const styles = useStyles();
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
-export function Chip({ label, color = colors.surfaceAlt, textColor = colors.text }: { label: string; color?: string; textColor?: string }) {
+export function Chip({ label, color, textColor }: { label: string; color?: string; textColor?: string }) {
+  const c = useTheme();
+  const styles = useStyles();
   return (
-    <View style={[styles.chip, { backgroundColor: color }]}>
-      <Text style={[styles.chipText, { color: textColor }]}>{label}</Text>
+    <View style={[styles.chip, { backgroundColor: color ?? c.surfaceAlt }]}>
+      <Text style={[styles.chipText, { color: textColor ?? c.text }]}>{label}</Text>
     </View>
   );
 }
@@ -71,6 +78,7 @@ export function Chip({ label, color = colors.surfaceAlt, textColor = colors.text
 type TextLike = PropsWithChildren<Omit<TextProps, "style"> & { style?: StyleProp<TextStyle> }>;
 
 export function Title({ children, style, ...rest }: TextLike) {
+  const styles = useStyles();
   return (
     <Text style={[styles.title, style]} {...rest}>
       {children}
@@ -79,6 +87,7 @@ export function Title({ children, style, ...rest }: TextLike) {
 }
 
 export function Muted({ children, style, ...rest }: TextLike) {
+  const styles = useStyles();
   return (
     <Text style={[styles.muted, style]} {...rest}>
       {children}
@@ -87,6 +96,7 @@ export function Muted({ children, style, ...rest }: TextLike) {
 }
 
 export function Body({ children, style, ...rest }: TextLike) {
+  const styles = useStyles();
   return (
     <Text style={[styles.body, style]} {...rest}>
       {children}
@@ -95,6 +105,7 @@ export function Body({ children, style, ...rest }: TextLike) {
 }
 
 export function Empty({ title, hint }: { title: string; hint?: string }) {
+  const styles = useStyles();
   return (
     <View style={styles.empty}>
       <Title style={{ textAlign: "center" }}>{title}</Title>
@@ -103,7 +114,7 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => ({
   button: {
     flexDirection: "row",
     alignItems: "center",
@@ -111,22 +122,22 @@ const styles = StyleSheet.create({
     gap: space.sm,
     paddingVertical: 14,
     paddingHorizontal: space.lg,
-    borderRadius: radius.md,
+    borderRadius: 14,
   },
-  buttonCompact: { paddingVertical: 8, paddingHorizontal: space.md, borderRadius: radius.sm },
+  buttonCompact: { paddingVertical: 8, paddingHorizontal: space.md, borderRadius: 8 },
   buttonLabel: { fontSize: 16, fontWeight: "600" },
   buttonLabelCompact: { fontSize: 14 },
   card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+    backgroundColor: c.surface,
+    borderRadius: 22,
     padding: space.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderColor: c.border,
   },
-  chip: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: radius.pill, alignSelf: "flex-start" },
+  chip: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, alignSelf: "flex-start" },
   chipText: { fontSize: 12, fontWeight: "600", letterSpacing: 0.3 },
-  title: { color: colors.text, fontSize: 22, fontWeight: "700" },
-  muted: { color: colors.muted, fontSize: 14, lineHeight: 20 },
-  body: { color: colors.text, fontSize: 16, lineHeight: 22 },
+  title: { color: c.text, fontSize: 22, fontWeight: "700" },
+  muted: { color: c.muted, fontSize: 14, lineHeight: 20 },
+  body: { color: c.text, fontSize: 16, lineHeight: 22 },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.xl },
-});
+}));

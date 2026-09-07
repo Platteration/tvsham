@@ -8,7 +8,7 @@ import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, Tex
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, MAX_HINT_LENGTH, type CaptureSource } from "@tvsham/shared";
 import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
-import { colors, radius, space } from "@/theme";
+import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
 import { useHydrated, useSettings } from "@/store";
@@ -16,6 +16,8 @@ import { useHydrated, useSettings } from "@/store";
 type Mode = CaptureSource;
 
 export default function CaptureScreen() {
+  const styles = useStyles();
+  const c = useTheme();
   const [mode, setMode] = useState<Mode>("camera");
   const [hint, setHint] = useState("");
   const router = useRouter();
@@ -90,8 +92,8 @@ export default function CaptureScreen() {
       )}
 
       {state.phase === "error" ? (
-        <Card style={[styles.notice, { borderColor: colors.danger }]}>
-          <Text style={{ color: colors.danger, fontWeight: "700" }}>Couldn't identify</Text>
+        <Card style={[styles.notice, { borderColor: c.danger }]}>
+          <Text style={{ color: c.danger, fontWeight: "700" }}>Couldn't identify</Text>
           <Muted style={{ marginTop: space.xs }}>{state.error}</Muted>
           <Button label="Dismiss" variant="ghost" compact style={{ marginTop: space.md, alignSelf: "flex-start" }} onPress={reset} />
         </Card>
@@ -107,13 +109,15 @@ type ModeProps = Pick<ReturnType<typeof useIdentify>, "state" | "start" | "cance
  * narrows the search a lot, especially for long-running shows.
  */
 function HintField({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) {
+  const styles = useStyles();
+  const c = useTheme();
   return (
     <TextInput
       value={value}
       onChangeText={onChange}
       editable={!disabled}
       placeholder="Optional hint: “90s sitcom”, “on Netflix”…"
-      placeholderTextColor={colors.muted}
+      placeholderTextColor={c.muted}
       maxLength={MAX_HINT_LENGTH}
       returnKeyType="done"
       style={styles.hintField}
@@ -123,6 +127,8 @@ function HintField({ value, onChange, disabled }: { value: string; onChange: (v:
 }
 
 function CameraMode({ state, start, cancel, hint }: ModeProps) {
+  const styles = useStyles();
+  const c = useTheme();
   const [camPerm, requestCam] = useCameraPermissions();
   const [micPerm, requestMic] = useMicrophonePermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -172,7 +178,7 @@ function CameraMode({ state, start, cancel, hint }: ModeProps) {
     void start("camera", producer, { hints: hint.trim() || undefined });
   };
 
-  if (!camPerm || !micPerm) return <ActivityIndicator style={{ marginTop: space.xl }} color={colors.accent} />;
+  if (!camPerm || !micPerm) return <ActivityIndicator style={{ marginTop: space.xl }} color={c.accent} />;
 
   if (!granted) {
     return (
@@ -264,6 +270,8 @@ function ScreenMode({ state, start, cancel, hint }: ModeProps) {
 }
 
 function StatusPill({ state }: { state: ReturnType<typeof useIdentify>["state"] }) {
+  const styles = useStyles();
+  const c = useTheme();
   if (state.phase !== "recording" && state.phase !== "uploading") return <View style={styles.pillSpacer} />;
   const guess = state.result?.identification;
   const label =
@@ -274,14 +282,14 @@ function StatusPill({ state }: { state: ReturnType<typeof useIdentify>["state"] 
         : "Identifying…";
   return (
     <View style={styles.pill}>
-      <ActivityIndicator color={colors.text} size="small" />
+      <ActivityIndicator color={c.text} size="small" />
       <Text style={styles.pillText}>{label}</Text>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
+const useStyles = makeStyles((c) => ({
+  root: { flex: 1, backgroundColor: c.bg },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -289,30 +297,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
   },
-  brand: { color: colors.text, fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
+  brand: { color: c.text, fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
   topActions: { flexDirection: "row", gap: space.lg },
-  topLink: { color: colors.accent, fontSize: 16, fontWeight: "600" },
+  topLink: { color: c.accent, fontSize: 16, fontWeight: "600" },
   modeSwitch: {
     flexDirection: "row",
     marginHorizontal: space.lg,
     marginBottom: space.md,
-    backgroundColor: colors.surface,
+    backgroundColor: c.surface,
     borderRadius: radius.pill,
     padding: 4,
   },
   modeTab: { flex: 1, paddingVertical: 10, borderRadius: radius.pill, alignItems: "center" },
-  modeTabActive: { backgroundColor: colors.surfaceAlt },
-  modeTabText: { color: colors.muted, fontWeight: "600" },
-  modeTabTextActive: { color: colors.text },
+  modeTabActive: { backgroundColor: c.surfaceAlt },
+  modeTabText: { color: c.muted, fontWeight: "600" },
+  modeTabTextActive: { color: c.text },
   notice: { marginHorizontal: space.lg, marginBottom: space.md },
   hintField: {
     marginHorizontal: space.lg,
     marginBottom: space.md,
-    backgroundColor: colors.surface,
+    backgroundColor: c.surface,
     borderRadius: radius.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    color: colors.text,
+    borderColor: c.border,
+    color: c.text,
     paddingHorizontal: space.md,
     paddingVertical: 10,
     fontSize: 14,
@@ -341,15 +349,15 @@ const styles = StyleSheet.create({
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: colors.accent,
+    backgroundColor: c.accent,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 6,
     borderColor: "rgba(255,255,255,0.25)",
   },
-  bigButtonBusy: { backgroundColor: colors.danger },
-  bigButtonText: { color: colors.accentText, fontSize: 18, fontWeight: "800" },
-  stopSquare: { width: 34, height: 34, borderRadius: 6, backgroundColor: colors.accentText },
+  bigButtonBusy: { backgroundColor: c.danger },
+  bigButtonText: { color: c.accentText, fontSize: 18, fontWeight: "800" },
+  stopSquare: { width: 34, height: 34, borderRadius: 6, backgroundColor: c.accentText },
   hint: { textAlign: "center", color: "rgba(255,255,255,0.8)" },
   pill: {
     flexDirection: "row",
@@ -361,5 +369,5 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   pillSpacer: { height: 36 },
-  pillText: { color: colors.text, fontWeight: "600" },
-});
+  pillText: { color: c.text, fontWeight: "600" },
+}));
