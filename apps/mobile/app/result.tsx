@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ConfidenceRing } from "@/motion";
 import { LinkRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
 import { colors, radius, space } from "@/theme";
@@ -21,6 +22,7 @@ export default function ResultScreen() {
   const id = result.identification!;
   const saved = library.some((i) => i.id === result.sessionId) || isSaved(result);
   const primary = result.links[0];
+  const hero = result.links.find((l) => l.imageUrl)?.imageUrl;
   const confident = result.status === "identified";
 
   const onSave = async () => {
@@ -33,16 +35,21 @@ export default function ResultScreen() {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Card>
-        <View style={{ flexDirection: "row", gap: space.sm, alignItems: "center", flexWrap: "wrap" }}>
-          <Chip label={kindLabel(id.kind)} color={colors.accent} textColor={colors.accentText} />
-          <Chip
-            label={confident ? "Match" : result.status === "unsure" ? "Best guess" : "Not sure"}
-            color={confident ? colors.success : colors.warning}
-            textColor="#111"
-          />
-          <Muted>{Math.round(id.confidence * 100)}% sure</Muted>
+        <View style={{ flexDirection: "row", gap: space.md, alignItems: "center" }}>
+          <ConfidenceRing value={id.confidence} />
+          <View style={{ flex: 1, gap: space.xs }}>
+            <Chip label={kindLabel(id.kind)} color={colors.accent} textColor={colors.accentText} />
+            <Muted>
+              {confident ? "Confident match" : result.status === "unsure" ? "Best guess" : "Low confidence"}
+            </Muted>
+          </View>
         </View>
-        {primary?.imageUrl ? <Image source={{ uri: primary.imageUrl }} style={styles.hero} resizeMode="cover" /> : null}
+        {hero ? (
+          <View style={styles.heroWrap}>
+            <Image source={{ uri: hero }} style={styles.heroBackdrop} resizeMode="cover" blurRadius={18} />
+            <Image source={{ uri: hero }} style={styles.heroImage} resizeMode="contain" />
+          </View>
+        ) : null}
         <Title style={{ marginTop: space.md }}>{id.title}</Title>
         {subtitleFor(id) ? <Body style={{ color: colors.muted, marginTop: 2 }}>{subtitleFor(id)}</Body> : null}
         <Muted style={{ marginTop: space.md }}>{id.evidence}</Muted>
@@ -101,5 +108,14 @@ export default function ResultScreen() {
 
 const styles = StyleSheet.create({
   container: { padding: space.lg, gap: space.lg, paddingBottom: space.xl * 2 },
-  hero: { width: "100%", height: 180, borderRadius: radius.md, marginTop: space.md, backgroundColor: colors.surfaceAlt },
+  heroWrap: {
+    width: "100%",
+    height: 190,
+    borderRadius: radius.md,
+    marginTop: space.md,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceAlt,
+  },
+  heroBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, opacity: 0.55 },
+  heroImage: { width: "100%", height: "100%" },
 });

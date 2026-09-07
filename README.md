@@ -109,6 +109,10 @@ Both modes take an optional one-line hint ("90s sitcom", "on Netflix"). Anything
 - **Point at a TV** – full‑screen camera. Tap *Identify*; the app records 8‑second clips at 480p and keeps going until the server is confident or you tap stop. Get dialogue or on‑screen text (subtitles, a title card, a channel name) in frame for the best results.
 - **My screen** – iOS does not let third‑party apps capture other apps' screens (that needs a Broadcast Upload Extension), so both platforms use the OS screen recorder: record with the system control, then pick the recording in the app. The server analyses up to the first 60 seconds. Titles, captions and channel names in the UI make this mode very accurate for YouTube, Shorts, TikTok and Reels.
 
+### Look and feel
+
+Dark, camera-first. While a clip is being taken, sonar rings pulse out of the capture button and the button breathes, so the wait reads as listening rather than hanging; corner brackets frame where to point. Results lead with a confidence ring (green, amber, red) instead of a bare percentage, over a poster backdrop blurred to fill the card. All animation is native-driven so the camera preview stays smooth.
+
 ### Result and library
 
 The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, MAX_HINT_LENGTH, type CaptureSource } from "@tvsham/shared";
+import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
 import { colors, radius, space } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
@@ -195,17 +196,23 @@ function CameraMode({ state, start, cancel, hint }: ModeProps) {
         videoQuality="480p"
         onCameraReady={() => setReady(true)}
       />
+      {!busy ? <ViewfinderFrame /> : null}
       <View style={styles.cameraOverlay} pointerEvents="box-none">
         <StatusPill state={state} />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={busy ? "Stop listening" : "Identify"}
-          disabled={!ready}
-          onPress={onPress}
-          style={({ pressed }) => [styles.bigButton, busy && styles.bigButtonBusy, pressed && { transform: [{ scale: 0.96 }] }]}
-        >
-          {busy ? <View style={styles.stopSquare} /> : <Text style={styles.bigButtonText}>Identify</Text>}
-        </Pressable>
+        <View style={styles.buttonWrap}>
+          <SonarRings size={120} active={busy} />
+          <Breathing active={busy}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={busy ? "Stop listening" : "Identify"}
+              disabled={!ready}
+              onPress={onPress}
+              style={({ pressed }) => [styles.bigButton, busy && styles.bigButtonBusy, pressed && { transform: [{ scale: 0.96 }] }]}
+            >
+              {busy ? <View style={styles.stopSquare} /> : <Text style={styles.bigButtonText}>Identify</Text>}
+            </Pressable>
+          </Breathing>
+        </View>
         <Muted style={styles.hint}>
           {busy ? "Tap to stop" : "Frame the screen and hold steady. Dialogue and on-screen text help."}
         </Muted>
@@ -329,6 +336,7 @@ const styles = StyleSheet.create({
     padding: space.lg,
     gap: space.md,
   },
+  buttonWrap: { width: 160, height: 160, alignItems: "center", justifyContent: "center" },
   bigButton: {
     width: 120,
     height: 120,
