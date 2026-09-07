@@ -11,6 +11,7 @@ import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
+import { clearQueue, flushQueue, loadQueue, queueLength, useQueue } from "@/queue";
 import { useHydrated, useSettings } from "@/store";
 
 type Mode = CaptureSource;
@@ -20,6 +21,8 @@ export default function CaptureScreen() {
   const c = useTheme();
   const [mode, setMode] = useState<Mode>("camera");
   const [hint, setHint] = useState("");
+  const pending = useQueue();
+  const [flushing, setFlushing] = useState(false);
   const router = useRouter();
   const { state, start, cancel, reset } = useIdentify();
   const settings = useSettings();
@@ -28,6 +31,33 @@ export default function CaptureScreen() {
   const busy = state.phase === "recording" || state.phase === "uploading";
 
   useEffect(() => {
+    void loadQueue();
+  }, []);
+
+  const flush = useCallback(async () => {
+    setFlushing(true);
+    try {
+      const outcome = await flushQueue();
+      if (outcome.identified > 0) router.push("/result");
+    } finally {
+      setFlushing(false);
+    }
+  }, [router]);
+
+  // Retry queued clips whenever the app comes back, which is usually when a
+  // connection has come back too.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active" && queueLength() > 0 && !busy) void flush();
+    });
+    return () => sub.remove();
+  }, [busy, flush]);
+
+  useEffect(() => {
+    if (state.phase === "queued") {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      reset();
+    }
     if (state.phase === "done" && state.result) {
       void Haptics.notificationAsync(
         state.result.status === "identified"
@@ -90,6 +120,21 @@ export default function CaptureScreen() {
           )}
         </>
       )}
+
+      {pending.length > 0 ? (
+        <Card style={styles.notice}>
+          <Title>
+            {pending.length === 1 ? "1 clip waiting" : `${pending.length} clips waiting`}
+          </Title>
+          <Muted style={{ marginTop: space.xs }}>
+            Recorded while the server was out of reach. They'll be identified as soon as it answers.
+          </Muted>
+          <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.md }}>
+            <Button label="Try now" compact loading={flushing} onPress={() => void flush()} />
+            <Button label="Discard" compact variant="ghost" onPress={() => void clearQueue()} />
+          </View>
+        </Card>
+      ) : null}
 
       {state.phase === "error" ? (
         <Card style={[styles.notice, { borderColor: c.danger }]}>

@@ -5,9 +5,10 @@ import {
   type RecognitionResult,
 } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
+import { enqueue } from "./queue";
 import { setLastResult } from "./store";
 
-export type Phase = "idle" | "recording" | "uploading" | "done" | "error";
+export type Phase = "idle" | "recording" | "uploading" | "done" | "error" | "queued";
 
 export interface IdentifyState {
   phase: Phase;
@@ -15,6 +16,8 @@ export interface IdentifyState {
   clip: number;
   result: RecognitionResult | null;
   error: string | null;
+  /** Set when the clip could not be sent and was kept for later. */
+  queued?: boolean;
 }
 
 const idle: IdentifyState = { phase: "idle", clip: 0, result: null, error: null };
@@ -58,9 +61,12 @@ export function useIdentify() {
       const maxClips = opts.maxClips ?? MAX_CLIPS_PER_SESSION;
       setState({ phase: "recording", clip: 1, result: null, error: null });
 
+      // The clip in hand, kept outside the try so a failure can still queue it.
+      let lastClipUri: string | null = null;
+      // Start recording immediately; the session is created while the first clip records.
+      let recording: Promise<string | null> = producer.record().catch(() => null);
+
       try {
-        // Start recording immediately; the session is created while the first clip records.
-        let recording: Promise<string | null> = producer.record();
         const sessionId = await createSession(source, opts.hints);
         if (cancelled.current) return;
         sessionRef.current = sessionId;
@@ -71,6 +77,7 @@ export function useIdentify() {
           const uri = await recording;
           if (cancelled.current) return;
           if (!uri) throw new Error("Recording produced no file.");
+          lastClipUri = uri;
 
           setState({ phase: "uploading", clip, result: latest, error: null });
           const upload = uploadClip(sessionId, uri, { clipKey: `${sessionId}:${clip}` });
@@ -102,7 +109,18 @@ export function useIdentify() {
             : err instanceof Error
               ? err.message
               : "Something went wrong.";
-        setState((prev) => ({ ...prev, phase: "error", error: message }));
+        // The server being unreachable is not the user's problem to solve now:
+        // keep the clip and identify it once there is a connection again.
+        const networkProblem = !(err instanceof ApiError);
+        // A clip that was still recording when the session failed is worth keeping too.
+        if (!lastClipUri) lastClipUri = await recording.catch(() => null);
+        const kept =
+          networkProblem && lastClipUri ? await enqueue(lastClipUri, source, message, opts.hints) : null;
+        setState((prev) =>
+          kept
+            ? { ...prev, phase: "queued", error: null, queued: true }
+            : { ...prev, phase: "error", error: message },
+        );
       } finally {
         const id = sessionRef.current;
         sessionRef.current = null;

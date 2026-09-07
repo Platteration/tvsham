@@ -124,6 +124,10 @@ Dark by default, with a full light palette that follows the system or can be pin
 
 Colours live in one palette (`src/theme.tsx`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
 
+### When the server is out of reach
+
+A clip that cannot be uploaded is kept rather than lost: it is moved out of the cache into the app's own storage and queued, up to ten clips. The capture screen shows how many are waiting, and the queue is retried whenever the app comes back to the foreground or you tap *Try now*. This is what makes the app usable on a plane or in a dead zone: record now, get the answer when there is a connection.
+
 ### Result and library
 
 The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.
