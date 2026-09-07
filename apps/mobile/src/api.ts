@@ -106,27 +106,30 @@ export async function uploadClip(
       signal: opts.signal ?? null,
     });
     // 202 means this clip was already accepted and is still being analysed —
-    // the body is the session mid-flight, not an answer. Follow it up rather
-    // than passing a "still listening" state off as the result.
-    if (res.status === 202) {
-      await parse<RecognitionResult>(res);
-      return pollUntilAnswered(sessionId, opts.signal);
-    }
-    return parse<RecognitionResult>(res);
+    // the body is the session mid-flight, not an answer.
+    const stillAnalysing = res.status === 202;
+    return { result: await parse<RecognitionResult>(res), stillAnalysing };
   };
+
+  let sent: { result: RecognitionResult; stillAnalysing: boolean };
   try {
-    return await send();
+    sent = await send();
   } catch (err) {
     // One retry for transient network drops; server-side errors are not retried.
     if (err instanceof ApiError || opts.signal?.aborted) throw err;
     await new Promise((r) => setTimeout(r, 800));
-    return send();
+    sent = await send();
   }
+  // Outside the retry above on purpose: a failed poll must not re-upload the clip.
+  return sent.stillAnalysing ? pollUntilSettled(sessionId, opts.signal) : sent.result;
 }
 
 /** The session's current state, used to follow up a clip the server is still analysing. */
-export async function fetchSession(sessionId: string): Promise<RecognitionResult> {
-  const res = await fetch(`${baseUrl()}/sessions/${sessionId}`, { headers: headers() });
+export async function fetchSession(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
+  const res = await fetch(`${baseUrl()}/sessions/${sessionId}`, {
+    headers: headers(),
+    signal: signal ?? null,
+  });
   return parse<RecognitionResult>(res);
 }
 
@@ -134,12 +137,18 @@ export async function fetchSession(sessionId: string): Promise<RecognitionResult
 const POLL_ATTEMPTS = 20;
 const POLL_INTERVAL_MS = 3000;
 
-async function pollUntilAnswered(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
-  let latest = await fetchSession(sessionId);
-  for (let i = 0; i < POLL_ATTEMPTS && !latest.identification; i++) {
-    if (signal?.aborted) break;
+/**
+ * Follow up a clip the server is still analysing. The signal to wait on is the
+ * server's own `analysing` flag: whether an identification exists is
+ * session-wide, so a previous clip's answer would end the wait immediately and
+ * be returned as this clip's result.
+ */
+async function pollUntilSettled(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
+  let latest = await fetchSession(sessionId, signal);
+  for (let i = 0; i < POLL_ATTEMPTS && latest.analysing; i++) {
+    if (signal?.aborted) throw new ApiError("Cancelled while waiting for the server.");
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    latest = await fetchSession(sessionId);
+    latest = await fetchSession(sessionId, signal);
   }
   return latest;
 }

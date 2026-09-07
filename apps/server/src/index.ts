@@ -176,7 +176,10 @@ app.post("/sessions/:id/clips", async (c) => {
       return { result: { ...describe(s), wantsMore: false, message: "Clip limit reached for this session." } };
     }
     if (!usage.take(billTo)) return { result: overLimitResult(s), status: 429 as const };
-    return limiter.run(async () => ({ result: await processClip(s, clip, clipKey) }));
+    s.analysing++;
+    return limiter.run(async () => ({ result: await processClip(s, clip, clipKey) })).finally(() => {
+      s.analysing--;
+    });
   });
   s.busy = work.catch(() => undefined);
   try {
@@ -259,8 +262,10 @@ async function settledWithin(work: Promise<unknown>, ms: number): Promise<boolea
   if (ms <= 0) return false;
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<boolean>((resolve) => {
+    // Deliberately not unref'd: an unref'd timer never fires when nothing else
+    // holds the event loop open, and the finally below always clears it, so it
+    // cannot keep the process alive either.
     timer = setTimeout(() => resolve(false), ms);
-    timer.unref?.();
   });
   try {
     return await Promise.race([work.then(() => true), timeout]);
@@ -280,6 +285,7 @@ function describe(s: Session): RecognitionResult {
     secondsAnalysed: Math.round(s.secondsAnalysed),
     watch: s.last?.watch ?? [],
     cast: s.last?.cast ?? [],
+    analysing: s.analysing > 0,
   };
   if (!s.last) {
     return {

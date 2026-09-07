@@ -202,8 +202,10 @@ describe("limits", () => {
   });
 
   it("says 202 rather than passing a mid-flight state off as the answer", async () => {
+    // A real wait, so the race in settledWithin is actually exercised: with 0 it
+    // short-circuits and a settledWithin that always returned false would pass.
     const original = config.retryWaitMs;
-    (config as { retryWaitMs: number }).retryWaitMs = 0; // do not wait at all
+    (config as { retryWaitMs: number }).retryWaitMs = 120;
     try {
       const created = await app.request("/sessions", { method: "POST" });
       const { sessionId } = (await created.json()) as { sessionId: string };
@@ -221,6 +223,30 @@ describe("limits", () => {
       assert.equal(res.status, 202);
       assert.equal(res.headers.get("retry-after"), "5");
       assert.match(((await res.json()) as { message: string }).message, /Still analysing/);
+    } finally {
+      (config as { retryWaitMs: number }).retryWaitMs = original;
+    }
+  });
+
+  it("returns 200 once the in-flight analysis settles", async () => {
+    const original = config.retryWaitMs;
+    (config as { retryWaitMs: number }).retryWaitMs = 5000;
+    try {
+      const created = await app.request("/sessions", { method: "POST" });
+      const { sessionId } = (await created.json()) as { sessionId: string };
+      const s = getSession(sessionId);
+      s?.seenClipKeys.add("settles");
+      if (s) s.busy = new Promise((resolve) => setTimeout(resolve, 50));
+      const form = new FormData();
+      form.set("clip", new Blob([new Uint8Array(8)]), "clip.mp4");
+      const res = await app.request(`/sessions/${sessionId}/clips`, {
+        method: "POST",
+        headers: { "x-clip-key": "settles" },
+        body: form,
+      });
+      // Waited for the work rather than timing out, so this is the real answer.
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as { analysing: boolean }).analysing, false);
     } finally {
       (config as { retryWaitMs: number }).retryWaitMs = original;
     }

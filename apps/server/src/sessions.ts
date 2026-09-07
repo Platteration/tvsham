@@ -17,6 +17,8 @@ export interface Session {
   last?: { identification: Identification; links: ResolvedLink[]; watch: WatchOption[]; cast: CastMember[] };
   /** Serialises clip processing so two uploads for one session never race. */
   busy: Promise<unknown>;
+  /** Clips of this session currently being analysed. */
+  analysing: number;
 }
 
 const sessions = new Map<string, Session>();
@@ -32,6 +34,7 @@ export function createSession(source: CaptureSource, hints?: string, region = co
     secondsAnalysed: 0,
     region,
     busy: Promise.resolve(),
+    analysing: 0,
   };
   sessions.set(s.id, s);
   return s;

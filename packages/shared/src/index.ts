@@ -104,6 +104,8 @@ export interface RecognitionResult {
   cast: CastMember[];
   /** True when the server would like another clip to raise confidence. */
   wantsMore: boolean;
+  /** True while a clip in this session is still being analysed. */
+  analysing: boolean;
   /** Human-readable hint for the UI ("Keep pointing at the screen…"). */
   message: string;
 }
