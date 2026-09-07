@@ -91,15 +91,17 @@ export async function uploadClip(
 ): Promise<RecognitionResult> {
   const name = fileUri.split("/").pop() || "clip.mp4";
   const type = opts.mimeType ?? (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4");
+  // Sent as a header as well as a field so the server can recognise a retry of a
+  // clip it already analysed before it buffers the body again.
+  const clipKey = (opts.clipKey ?? fileUri).replace(/[^A-Za-z0-9:_-]/g, "").slice(-128) || "clip";
   const send = async () => {
     const form = new FormData();
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
     form.append("clip", { uri: fileUri, name, type });
-    // Lets the server ignore a duplicate if the retry below re-sends a clip it already got.
-    form.append("clipKey", opts.clipKey ?? fileUri);
+    form.append("clipKey", clipKey);
     const res = await fetch(`${baseUrl()}/sessions/${sessionId}/clips`, {
       method: "POST",
-      headers: headers(),
+      headers: headers({ "X-Clip-Key": clipKey }),
       body: form,
       signal: opts.signal ?? null,
     });

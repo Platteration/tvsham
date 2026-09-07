@@ -84,8 +84,21 @@ export async function probe(file: string): Promise<Probe> {
 
   const d = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(stderr);
   const seconds = d ? Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]) : 0;
-  const v = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(stderr);
-  return { seconds, width: v ? Number(v[1]) : 0, height: v ? Number(v[2]) : 0 };
+
+  // Take the largest video stream, not the first one listed: ffmpeg decodes the
+  // stream it selects (by default disposition and resolution), so measuring
+  // stream #0 lets a file hide a huge stream behind a tiny one.
+  let width = 0;
+  let height = 0;
+  for (const m of stderr.matchAll(/Video:.*?,\s*(\d{2,6})x(\d{2,6})/g)) {
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w * h > width * height) {
+      width = w;
+      height = h;
+    }
+  }
+  return { seconds, width, height };
 }
 
 /** Kept for callers that only want the length. */
@@ -99,6 +112,12 @@ export async function probeDuration(file: string): Promise<number> {
  */
 export async function assertDecodable(file: string): Promise<Probe> {
   const p = await probe(file);
+  // A probe that found nothing means ffmpeg could not read the file, or it timed
+  // out. Either way there is no budget to check it against, so refuse rather
+  // than fall through to decoding it with default limits.
+  if (p.width === 0 || p.height === 0) {
+    throw new Error("Clip could not be read as video.");
+  }
   const pixels = p.width * p.height;
   if (pixels > config.maxPixels) {
     throw new Error(`Clip is ${p.width}x${p.height}, larger than this server will decode.`);

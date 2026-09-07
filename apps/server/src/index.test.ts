@@ -6,7 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
-import { app, caller, cleanHint, safeExtension } from "./index.js";
+import { config } from "./config.js";
+import { app, caller, cleanClipKey, cleanHint, safeExtension } from "./index.js";
+import { getSession } from "./sessions.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -170,14 +172,47 @@ describe("limits", () => {
     assert.equal(withHeaders({ "x-forwarded-for": "1.2.3.4" }), withHeaders({ "x-forwarded-for": "5.6.7.8" }));
   });
 
-  it("refuses to create sessions without bound", async () => {
+  it("refuses to create sessions once the ceiling is reached", async () => {
+    const original = config.maxSessions;
+    (config as { maxSessions: number }).maxSessions = 2;
     const made: string[] = [];
-    for (let i = 0; i < 4; i++) {
-      const res = await app.request("/sessions", { method: "POST" });
-      if (res.status === 201) made.push(((await res.json()) as { sessionId: string }).sessionId);
+    try {
+      let refused = 0;
+      for (let i = 0; i < 5; i++) {
+        const res = await app.request("/sessions", { method: "POST" });
+        if (res.status === 201) made.push(((await res.json()) as { sessionId: string }).sessionId);
+        else if (res.status === 503) refused++;
+      }
+      assert.ok(refused > 0, "expected the cap to refuse a session");
+    } finally {
+      (config as { maxSessions: number }).maxSessions = original;
+      for (const id of made) await app.request(`/sessions/${id}`, { method: "DELETE" });
     }
-    assert.ok(made.length > 0);
-    for (const id of made) await app.request(`/sessions/${id}`, { method: "DELETE" });
+  });
+
+  it("only accepts clip keys it can safely compare", () => {
+    assert.equal(cleanClipKey("abc:1"), "abc:1");
+    assert.equal(cleanClipKey("a".repeat(200)), undefined);
+    assert.equal(cleanClipKey("has spaces"), undefined);
+    assert.equal(cleanClipKey(""), undefined);
+    assert.equal(cleanClipKey(42), undefined);
+  });
+
+  it("recognises a retried clip from its header, before the body is parsed", async () => {
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    // Mark the key as already analysed, then send a body that would otherwise
+    // be rejected as empty: a 200 proves the header short-circuit ran first.
+    const s = getSession(sessionId);
+    s?.seenClipKeys.add("known-key");
+    const form = new FormData();
+    form.set("clip", new Blob([new Uint8Array(8)]), "clip.mp4");
+    const res = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { "x-clip-key": "known-key" },
+      body: form,
+    });
+    assert.equal(res.status, 200);
   });
 
   it("rejects an oversized session body before parsing it", async () => {

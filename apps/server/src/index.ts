@@ -137,33 +137,37 @@ app.post("/sessions/:id/clips", async (c) => {
   if (s.clips >= MAX_CLIPS_PER_SESSION) {
     return c.json({ ...describe(s), wantsMore: false, message: "Clip limit reached for this session." });
   }
-  // Peek before parsing: an over-quota caller should not get to make us buffer
-  // 80 MB first. The quota is only spent once we know the clip is not a retry.
+  // The clip key arrives as a header as well as a form field, so a retry can be
+  // recognised before its 80 MB body is buffered.
+  const headerKey = cleanClipKey(c.req.header("x-clip-key"));
+  if (headerKey && s.seenClipKeys.has(headerKey)) return c.json(describe(s));
+  // An over-quota caller should not get to make us buffer the body at all. The
+  // quota itself is only spent further down, once the clip is really analysed.
   if (usage.remaining(caller(c)) <= 0) return overLimit(c, s);
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
   if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
   if (clip.size < 1024) return c.json({ error: "clip is empty" }, 400);
-  const clipKey = typeof form["clipKey"] === "string" ? form["clipKey"] : undefined;
-  const alreadySeen = clipKey !== undefined && s.seenClipKeys.has(clipKey);
-  // A retry of a clip we already analysed costs nothing, so it does not count.
-  if (!alreadySeen && !usage.take(caller(c))) return overLimit(c, s);
+  const clipKey = headerKey ?? cleanClipKey(form["clipKey"]);
 
-  // Serialise per session (a second upload waits for the first) and cap global concurrency.
-  // Both the duplicate check and the clip cap are re-tested here rather than at
-  // request entry: s.clips only moves inside processClip, so concurrent uploads
-  // would otherwise all pass an entry check and run together.
-  const work = s.busy.then(() => {
-    if (clipKey && s.seenClipKeys.has(clipKey)) return describe(s);
+  // Serialise per session (a second upload waits for the first) and cap global
+  // concurrency. The duplicate check, the clip cap and the quota are all settled
+  // here rather than at request entry: s.clips only moves inside processClip, so
+  // concurrent uploads would otherwise all pass an entry check and run together,
+  // and a clip turned away here must not have spent a daily unit.
+  const work: Promise<Outcome> = s.busy.then(() => {
+    if (clipKey && s.seenClipKeys.has(clipKey)) return { result: describe(s) };
     if (s.clips >= MAX_CLIPS_PER_SESSION) {
-      return { ...describe(s), wantsMore: false, message: "Clip limit reached for this session." };
+      return { result: { ...describe(s), wantsMore: false, message: "Clip limit reached for this session." } };
     }
-    return limiter.run(() => processClip(s, clip, clipKey));
+    if (!usage.take(caller(c))) return { result: overLimitResult(s), status: 429 as const };
+    return limiter.run(async () => ({ result: await processClip(s, clip, clipKey) }));
   });
   s.busy = work.catch(() => undefined);
   try {
-    return c.json(await work);
+    const outcome = await work;
+    return c.json(outcome.result, outcome.status ?? 200);
   } catch (err) {
     console.error("[clip]", err);
     return c.json({ ...describe(s), status: "failed", wantsMore: false, message: clientErrorMessage(err) }, 500);
@@ -214,16 +218,28 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
   }
 }
 
+/** What the per-session work chain resolves to: a body, and the status to send it with. */
+interface Outcome {
+  result: RecognitionResult;
+  status?: 429;
+}
+
+function overLimitResult(s: Session): RecognitionResult {
+  return {
+    ...describe(s),
+    status: "failed",
+    wantsMore: false,
+    message: `Daily limit of ${config.dailyClipLimit} clips reached. It resets tomorrow.`,
+  };
+}
+
 function overLimit(c: Context, s: Session) {
-  return c.json(
-    {
-      ...describe(s),
-      status: "failed",
-      wantsMore: false,
-      message: `Daily limit of ${config.dailyClipLimit} clips reached. It resets tomorrow.`,
-    },
-    429,
-  );
+  return c.json(overLimitResult(s), 429);
+}
+
+/** Clip keys come from the client, and are only ever compared, never interpolated. */
+export function cleanClipKey(raw: unknown): string | undefined {
+  return typeof raw === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(raw) ? raw : undefined;
 }
 
 function describe(s: Session): RecognitionResult {

@@ -101,3 +101,42 @@ describe("media", () => {
     assert.equal(buf.readUInt32LE(24), 16000, "sample rate");
   });
 });
+
+describe("decode guards", () => {
+  let dir = "";
+
+  before(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "tvsham-guard-"));
+  });
+
+  after(async () => {
+    if (dir) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("measures the largest video stream, not the first one listed", async () => {
+    // A decode bomb hides a huge stream behind a small one: ffmpeg decodes the
+    // stream it selects, so measuring stream #0 would wave this through.
+    const bin = await ffmpegBinary();
+    const clipPath = path.join(dir, "two-stream.mp4");
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc=size=64x64:rate=2",
+      "-f", "lavfi", "-i", "testsrc=size=4000x4000:rate=1",
+      "-map", "0:v", "-map", "1:v", "-t", "1",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-disposition:v:0", "0", "-disposition:v:1", "default",
+      "-y", clipPath,
+    ]);
+    const p = await probe(clipPath);
+    assert.equal(p.width, 4000, "probe must report the largest stream");
+    await assert.rejects(assertDecodable(clipPath), /larger than this server will decode/);
+  });
+
+  it("refuses a file it could not read at all, rather than falling through", async () => {
+    // A probe that finds nothing means an unreadable file or a timed-out ffmpeg.
+    // Treating that as "no dimensions, so within budget" would let it through.
+    const junk = path.join(dir, "junk.mp4");
+    await fs.writeFile(junk, Buffer.alloc(4096, 0x41));
+    await assert.rejects(assertDecodable(junk), /could not be read as video/);
+  });
+});
