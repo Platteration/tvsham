@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "eval": "tsx src/eval/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",

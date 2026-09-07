@@ -1,0 +1,24 @@
+[
+  {
+    "file": "breaking-bad-s5e14.mp4",
+    "kind": "tv_episode",
+    "title": "Breaking Bad",
+    "year": 2013,
+    "season": 5,
+    "episode": 14,
+    "note": "camera pointed at a TV, subtitles on"
+  },
+  {
+    "file": "inception-hallway.mov",
+    "kind": "movie",
+    "title": "Inception",
+    "year": 2010,
+    "note": "dark scene, no dialogue, no on-screen text"
+  },
+  {
+    "file": "tiktok-cat.mp4",
+    "kind": "short_form",
+    "title": "cat knocks over vase",
+    "note": "screen recording, @handle visible in the UI"
+  }
+]

@@ -168,7 +168,18 @@ Everything below needs a device build or an outside relationship to do properly,
 
 - **Timestamp inside an episode.** Matching the transcript against subtitle files could say "you are 23 minutes into S3E7". Memorable, but it needs a subtitle corpus and licensing to match against.
 - **Speech-to-text is off by default.** Visuals and on-screen text identify most content; dialogue is the strongest signal for picking the exact episode of a long-running show. Turning `STT_PROVIDER` on costs another service per clip.
-- **The cost cascade is unmeasured.** `FIRST_PASS_MODEL` should cut the per-identification cost substantially, but nobody has run it against a set of real clips yet. Build that eval before trusting it.
+- **The cost cascade is unmeasured.** `FIRST_PASS_MODEL` should cut the per-identification cost substantially, but nobody has run it against real clips yet. The harness to do that ships with the repo (see below); what it needs is a clip set.
+
+## Measuring recognition quality
+
+`apps/server/src/eval/` runs a folder of labelled clips through the same pipeline the server uses and reports how it did:
+
+```bash
+npm run eval --workspace apps/server -- --clips apps/server/eval-clips --limit 3
+npm run eval --workspace apps/server -- --clips apps/server/eval-clips --model claude-sonnet-5
+```
+
+It reports accuracy, precision when it chooses to answer, right-title-wrong-episode separately, and mean confidence when right against when wrong. That last pair is the one that decides whether `FIRST_PASS_MODEL` is safe to turn on: if a cheaper model is as confident when it is wrong as when it is right, confidence cannot be used as an escalation threshold. `apps/server/eval-clips/README.md` covers what to put in a clip set. Every run costs one API request per clip.
 
 ## Cost
 

@@ -21,3 +21,8 @@ web-build/
 
 # Server scratch
 apps/server/tmp/
+
+# Eval recordings and their results are the user's, not the repo's
+apps/server/eval-clips/*
+!apps/server/eval-clips/README.md
+!apps/server/eval-clips/labels.example.json
