@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { Animated, Easing, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { makeStyles, useTheme } from "./theme";
@@ -9,7 +9,8 @@ import { makeStyles, useTheme } from "./theme";
  */
 export function SonarRings({ size, active }: { size: number; active: boolean }) {
   const c = useTheme();
-  const rings = useRef([0, 1, 2].map(() => new Animated.Value(0))).current;
+  // Held as state, not a ref: these values are read while rendering.
+  const [rings] = useState(() => [0, 1, 2].map(() => new Animated.Value(0)));
 
   useEffect(() => {
     if (!active) {
@@ -65,7 +66,7 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
 
 /** A slow breathing scale, used on the capture button so it never looks frozen. */
 export function Breathing({ active, children, style }: { active: boolean; children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
-  const value = useRef(new Animated.Value(0)).current;
+  const [value] = useState(() => new Animated.Value(0));
   useEffect(() => {
     if (!active) {
       value.setValue(0);

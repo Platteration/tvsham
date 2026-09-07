@@ -19,6 +19,7 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 
 ```bash
 npm install
+npm run lint                       # eslint on the app
 npm run typecheck                  # every workspace
 npm test                           # node:test in both workspaces; no network or API key
 npm run server                     # tsx watch, port 8787

@@ -129,7 +129,7 @@ export default function CaptureScreen() {
             {pending.length === 1 ? "1 clip waiting" : `${pending.length} clips waiting`}
           </Title>
           <Muted style={{ marginTop: space.xs }}>
-            Recorded while the server was out of reach. They'll be identified as soon as it answers.
+            Recorded while the server was out of reach. They’ll be identified as soon as it answers.
           </Muted>
           <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.md }}>
             <Button label="Try now" compact loading={flushing} onPress={() => void flush()} />
@@ -140,7 +140,7 @@ export default function CaptureScreen() {
 
       {state.phase === "error" ? (
         <Card style={[styles.notice, { borderColor: c.danger }]}>
-          <Text style={{ color: c.danger, fontWeight: "700" }}>Couldn't identify</Text>
+          <Text style={{ color: c.danger, fontWeight: "700" }}>Couldn’t identify</Text>
           <Muted style={{ marginTop: space.xs }}>{state.error}</Muted>
           <Button label="Dismiss" variant="ghost" compact style={{ marginTop: space.md, alignSelf: "flex-start" }} onPress={reset} />
         </Card>
@@ -232,7 +232,7 @@ function CameraMode({ state, start, cancel, hint }: ModeProps) {
       <Card style={styles.notice}>
         <Title>Camera and microphone</Title>
         <Muted style={{ marginTop: space.sm }}>
-          Point your phone at the TV. The camera reads what's on screen and the microphone picks up dialogue. Nothing is stored after it's identified.
+          Point your phone at the TV. The camera reads what’s on screen and the microphone picks up dialogue. Nothing is stored after it’s identified.
         </Muted>
         <Button label="Allow access" style={{ marginTop: space.md }} onPress={() => void requestAll()} />
       </Card>

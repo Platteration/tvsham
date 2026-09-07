@@ -11,7 +11,8 @@
     "server": "npm run dev --workspace apps/server",
     "mobile": "npm run start --workspace apps/mobile",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
   },
   "engines": {
     "node": ">=20"

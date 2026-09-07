@@ -3,7 +3,7 @@ import type { SavedItem } from "@tvsham/shared";
 import { clearHistory, removeSaved, saveHistoryItem, setWatched, useHistory, useLibrary } from "@/store";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Chip, Empty, Muted } from "@/ui";
-import { actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
+import { kindLabel, openLink, subtitleFor } from "@/results";
 
 function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
   const styles = useStyles();

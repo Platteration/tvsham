@@ -2,7 +2,7 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Image, Pressable, ScrollView, View } from "react-native";
 import { ConfidenceRing } from "@/motion";
 import { CastStrip, LinkRow, WatchRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
 import { isSaved, saveResult, useLastResult, useLibrary } from "@/store";
@@ -82,7 +82,7 @@ export default function ResultScreen() {
 
       {result.cast.length > 0 ? (
         <View style={{ gap: space.sm }}>
-          <Muted style={{ marginLeft: space.xs }}>Who's in it</Muted>
+          <Muted style={{ marginLeft: space.xs }}>Who’s in it</Muted>
           <CastStrip cast={result.cast} />
         </View>
       ) : null}
