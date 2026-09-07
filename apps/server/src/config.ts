@@ -64,6 +64,8 @@ export const config = {
   dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
   maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
+  /** Longest a retried clip waits for the original analysis before answering. */
+  retryWaitMs: positiveInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */
   sessionTtlMs: 15 * 60 * 1000,
   version: "0.1.0",

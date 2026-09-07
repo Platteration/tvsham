@@ -150,11 +150,16 @@ describe("decode guards", () => {
     ]);
     const p = await probe(clipPath);
     assert.equal(p.width, 320, "artwork must not be mistaken for the video stream");
-    // Would be refused if the 2000x2000 artwork counted towards the budget.
+    assert.equal(p.coverPixels, 2000 * 2000, "artwork is measured, just separately");
+    // Within budget, so it is accepted: artwork does not stand in for the video.
+    await assertDecodable(clipPath);
+
+    // But it is not exempt either. The demuxer decodes the picture on every
+    // probe, so oversized artwork is its own decode bomb.
     const original = config.maxPixels;
-    (config as { maxPixels: number }).maxPixels = 320 * 180;
+    (config as { maxPixels: number }).maxPixels = 1000 * 1000;
     try {
-      await assertDecodable(clipPath);
+      await assert.rejects(assertDecodable(clipPath), /artwork larger than this server will decode/);
     } finally {
       (config as { maxPixels: number }).maxPixels = original;
     }

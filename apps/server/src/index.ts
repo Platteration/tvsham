@@ -143,8 +143,9 @@ app.post("/sessions/:id/clips", async (c) => {
   if (headerKey && s.seenClipKeys.has(headerKey)) {
     // The key is recorded before recognition finishes, so wait for the original
     // to settle: otherwise a retry gets the half-written "still listening" state
-    // and the app stores that as the answer.
-    await s.busy;
+    // and the app stores that as the answer. Bounded, because s.busy is the tail
+    // of the whole session's queue and this path exists to answer quickly.
+    await Promise.race([s.busy, delay(config.retryWaitMs)]);
     return c.json(describe(s));
   }
   // Read now, while the socket is still open: the work below runs after a queue
@@ -244,6 +245,13 @@ function overLimitResult(s: Session): RecognitionResult {
 
 function overLimit(c: Context, s: Session) {
   return c.json(overLimitResult(s), 429);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
 }
 
 /** Clip keys come from the client, and are only ever compared, never interpolated. */

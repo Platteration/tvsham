@@ -53,8 +53,15 @@ const INPUT_GUARDS = ["-protocol_whitelist", "file"];
 
 export interface Probe {
   seconds: number;
+  /** The video stream ffmpeg would actually decode frames from. */
   width: number;
   height: number;
+  /**
+   * Pixels in the largest attached picture (cover art). ffmpeg never selects it
+   * for frame extraction, but the demuxer still decodes it while probing, so it
+   * needs its own bound rather than being ignored.
+   */
+  coverPixels: number;
 }
 
 /**
@@ -90,20 +97,25 @@ export async function probe(file: string): Promise<Probe> {
   // stream #0 lets a file hide a huge stream behind a tiny one.
   let width = 0;
   let height = 0;
+  let coverPixels = 0;
   for (const line of stderr.split("\n")) {
-    // Cover art is a video stream ffmpeg never decodes as video, so counting it
-    // would refuse ordinary files that happen to carry a large thumbnail.
-    if (line.includes("(attached pic)")) continue;
     const m = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(line);
     if (!m) continue;
     const w = Number(m[1]);
     const h = Number(m[2]);
+    // Cover art is counted separately: it is not the stream frames come from,
+    // so it must not stand in for the video, but it is still decoded on every
+    // probe and so cannot be waved through either.
+    if (line.includes("(attached pic)")) {
+      coverPixels = Math.max(coverPixels, w * h);
+      continue;
+    }
     if (w * h > width * height) {
       width = w;
       height = h;
     }
   }
-  return { seconds, width, height };
+  return { seconds, width, height, coverPixels };
 }
 
 /** Kept for callers that only want the length. */
@@ -126,6 +138,9 @@ export async function assertDecodable(file: string): Promise<Probe> {
   const pixels = p.width * p.height;
   if (pixels > config.maxPixels) {
     throw new Error(`Clip is ${p.width}x${p.height}, larger than this server will decode.`);
+  }
+  if (p.coverPixels > config.maxPixels) {
+    throw new Error("Clip carries artwork larger than this server will decode.");
   }
   if (p.seconds > config.maxDurationSeconds) {
     throw new Error(`Clip is ${Math.round(p.seconds)}s long, longer than this server will decode.`);
