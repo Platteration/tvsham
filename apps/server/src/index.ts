@@ -177,8 +177,15 @@ app.post("/sessions/:id/clips", async (c) => {
     }
     if (!usage.take(billTo)) return { result: overLimitResult(s), status: 429 as const };
     s.analysing++;
-    return limiter.run(async () => ({ result: await processClip(s, clip, clipKey) })).finally(() => {
-      s.analysing--;
+    return limiter.run(async () => {
+      try {
+        await processClip(s, clip, clipKey);
+      } finally {
+        // Decremented before the response is built, or this clip's own answer
+        // would claim the session is still analysing.
+        s.analysing--;
+      }
+      return { result: describe(s) };
     });
   });
   s.busy = work.catch(() => undefined);
@@ -191,7 +198,7 @@ app.post("/sessions/:id/clips", async (c) => {
   }
 });
 
-async function processClip(s: Session, clip: File, clipKey?: string): Promise<RecognitionResult> {
+async function processClip(s: Session, clip: File, clipKey?: string): Promise<void> {
   const workDir = path.join(config.tmpDir, `${s.id}-${s.clips}`);
   await fs.mkdir(workDir, { recursive: true });
   const ext = safeExtension(clip.name);
@@ -235,7 +242,6 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
       enrich(identification, s.region),
     ]);
     s.last = { identification, links, ...extra };
-    return describe(s);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
