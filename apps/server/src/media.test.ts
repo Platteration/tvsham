@@ -92,6 +92,23 @@ describe("media", () => {
     assert.equal(p.width, 0);
   });
 
+  it("uses a span the caller already probed instead of probing again", async () => {
+    // Proven by effect: a 2s span over a 5s clip must sample only the first 2s.
+    const frames = await extractFrames(clip, { count: 4, maxSeconds: 60, workDir: dir, spanSeconds: 2 });
+    assert.deepEqual(frames.map((f) => Number(f.t.toFixed(3))), [0.25, 0.75, 1.25, 1.75]);
+  });
+
+  it("returns what it got when the clip is shorter than the sampling asks for", async () => {
+    // 40 frames from a 5 second clip: whatever comes back must still be in order
+    // and correctly timed, rather than throwing or misnumbering.
+    const frames = await extractFrames(clip, { count: 40, maxSeconds: 60, workDir: dir });
+    assert.ok(frames.length > 0 && frames.length <= 40);
+    for (let i = 1; i < frames.length; i++) {
+      assert.ok(frames[i]!.t > frames[i - 1]!.t, "timestamps must increase");
+    }
+    assert.ok(frames.at(-1)!.t <= 5, "no frame may claim a time past the clip");
+  });
+
   it("extracts mono 16 kHz wav audio", async () => {
     const wav = await extractAudio(clip, { maxSeconds: 60, workDir: dir });
     assert.ok(wav);

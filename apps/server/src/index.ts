@@ -205,7 +205,13 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<Re
     const frameCount = Math.min(12, Math.max(config.framesPerClip, Math.round(looked / 4)));
 
     const [frames, wav] = await Promise.all([
-      extractFrames(clipPath, { count: frameCount, maxSeconds: config.maxClipSeconds, workDir }),
+      // The duration is already known from assertDecodable, so this does not re-probe.
+      extractFrames(clipPath, {
+        count: frameCount,
+        maxSeconds: config.maxClipSeconds,
+        workDir,
+        spanSeconds: duration,
+      }),
       extractAudio(clipPath, { maxSeconds: config.maxClipSeconds, workDir }),
     ]);
     const transcript = wav ? await sttProvider().transcribe(wav) : null;

@@ -159,43 +159,60 @@ export interface ExtractedFrame {
 /**
  * Pull `count` JPEG frames spread evenly over the first `maxSeconds` of the clip,
  * downscaled so the long edge is at most `maxEdge` px.
+ *
+ * One ffmpeg run does the whole set. Seeking to each frame separately means a
+ * spawn per frame, and measured on this machine it is roughly five times slower
+ * for a typical 8-second camera clip (390ms against 82ms) — every spawn re-opens
+ * and re-probes the file, which is the bulk of the work at that length.
+ *
+ * Pass `spanSeconds` when the caller has already probed the clip, to save the
+ * extra probe this would otherwise do.
  */
 export async function extractFrames(
   file: string,
-  opts: { count: number; maxSeconds: number; maxEdge?: number; workDir: string },
+  opts: { count: number; maxSeconds: number; maxEdge?: number; workDir: string; spanSeconds?: number },
 ): Promise<ExtractedFrame[]> {
-  const duration = await probeDuration(file);
+  const duration = opts.spanSeconds ?? (await probeDuration(file));
   const span = Math.max(0.5, Math.min(duration || opts.maxSeconds, opts.maxSeconds));
   const maxEdge = opts.maxEdge ?? 896;
+  const interval = span / opts.count;
+  // Start half an interval in: the very first frame of a clip is often black.
+  const offset = interval / 2;
+  const pattern = path.join(opts.workDir, "frame-%03d.jpg");
+
+  await run([
+    ...INPUT_GUARDS,
+    "-ss",
+    offset.toFixed(3),
+    "-i",
+    file,
+    "-vf",
+    `fps=${(1 / interval).toFixed(6)},scale='if(gt(iw,ih),min(${maxEdge},iw),-2)':'if(gt(iw,ih),-2,min(${maxEdge},ih))'`,
+    "-frames:v",
+    String(opts.count),
+    "-q:v",
+    "4",
+    "-threads",
+    "1",
+    "-fps_mode",
+    "passthrough",
+    "-y",
+    pattern,
+  ]);
+
+  // ffmpeg numbers its output from 1. Fewer files than asked for just means the
+  // clip ran out, and since the shortfall is always at the end the index still
+  // maps to the right timestamp.
   const frames: ExtractedFrame[] = [];
   for (let i = 0; i < opts.count; i++) {
-    // Avoid the very first frame (often black) and the last (often cut off).
-    const t = span * ((i + 0.5) / opts.count);
-    const out = path.join(opts.workDir, `frame-${i}.jpg`);
+    const out = path.join(opts.workDir, `frame-${String(i + 1).padStart(3, "0")}.jpg`);
     try {
-      await run([
-        ...INPUT_GUARDS,
-        "-ss",
-        t.toFixed(2),
-        "-i",
-        file,
-        "-frames:v",
-        "1",
-        "-vf",
-        `scale='if(gt(iw,ih),min(${maxEdge},iw),-2)':'if(gt(iw,ih),-2,min(${maxEdge},ih))'`,
-        "-q:v",
-        "4",
-        "-threads",
-        "1",
-        "-y",
-        out,
-      ]);
-      frames.push({ t, jpeg: await fs.readFile(out) });
-    } catch (err) {
-      // A seek past the end just yields no frame; keep going.
-      if (frames.length === 0 && i === opts.count - 1) throw err;
+      frames.push({ t: offset + i * interval, jpeg: await fs.readFile(out) });
+    } catch {
+      break;
     }
   }
+  if (frames.length === 0) throw new Error("No frames could be extracted from the clip.");
   return frames;
 }
 

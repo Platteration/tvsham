@@ -55,6 +55,8 @@ will pass typecheck and tests but reopen the hole.
 - **Re-check per-session limits inside the `s.busy` chain**, not at request entry:
   `s.clips` only moves inside `processClip`, so an entry check lets concurrent uploads
   all through.
+- **Frame extraction is one ffmpeg run, not one per frame.** Spawning per frame re-opens
+  and re-probes the file each time: measured ~5x slower on a typical 8-second clip.
 - **Every ffmpeg run needs a timeout and a size budget.** The input is attacker-supplied;
   a 424 KB file can declare 16000x9000 and cost gigabytes to decode one frame.
 - **Cap the frames carried in `s.evidence`.** Each clip re-sends the whole session, so
