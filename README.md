@@ -154,8 +154,8 @@ npm test              # unit tests in both workspaces
 
 The server tests cover the ffmpeg pipeline, link resolution, TMDB enrichment, the
 recogniser's control flow against a fake client, and the HTTP routes. The app tests cover
-the pure layer: settings validation, result formatting, the offline-queue drop policy, and
-a contrast audit that holds every text pairing in both schemes and all four accents to
+the pure layer: the record-and-upload loop against injected fakes, settings validation,
+result formatting, the offline-queue drop policy, and a contrast audit that holds every text pairing in both schemes and all four accents to
 WCAG AA.
 
 CI (`.github/workflows/ci.yml`) runs the typecheck, the server tests, a Metro bundle of the app, and a Docker build of the server.

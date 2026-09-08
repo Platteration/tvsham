@@ -7,7 +7,8 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 ## Layout
 
 - `apps/mobile` – Expo SDK 57, expo-router. Screens in `app/`, logic in `src/`
-  (`useIdentify.ts` is the record → upload → repeat loop; `store.ts` holds settings and the
+  (`identify-run.ts` is the record → upload → repeat loop, with its IO injected so it
+  can be tested without a renderer; `useIdentify.ts` is the React wrapper around it; `store.ts` holds settings and the
   saved library; `api.ts` talks to the server; `theme.tsx` owns the light/dark palettes).
   Path alias `@/` → `src/`.
 - `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
@@ -39,8 +40,8 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 - No test can hit the real API. Verify changes with typecheck, the unit tests, and
   `npx expo export` for the app bundle.
 - App logic worth testing goes in a React-Native-free module (`palette.ts`,
-  `settings.ts`, `format.ts`, `queue-policy.ts`); the `.tsx` files then hold only
-  rendering. That is what makes `npm test` possible in `apps/mobile` at all.
+  `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`); the `.tsx` files
+  then hold only rendering. That is what makes `npm test` possible in `apps/mobile` at all.
 - Colour changes must keep `palette.test.ts` green: it checks every text pairing in
   both schemes and all four accents against WCAG AA.
 
