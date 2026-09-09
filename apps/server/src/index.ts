@@ -6,6 +6,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import {
   CONFIDENT_THRESHOLD,
@@ -22,7 +23,15 @@ import { Limiter } from "./limiter.js";
 import { assertDecodable, extractAudio, extractFrames, ffmpegBinary } from "./media.js";
 import { recogniseWithEscalation } from "./recognize.js";
 import { resolveLinks } from "./resolve.js";
-import { createSession, deleteSession, getSession, sessionCount, sweepSessions, type Session } from "./sessions.js";
+import {
+  createSession,
+  deleteSession,
+  getSession,
+  sessionCount,
+  sessionsHeldBy,
+  sweepSessions,
+  type Session,
+} from "./sessions.js";
 import { enrich } from "./tmdb.js";
 import { sttProvider } from "./stt.js";
 import { createUsageStore } from "./usage.js";
@@ -35,6 +44,55 @@ const limiter = new Limiter(config.maxConcurrent);
 const usage = createUsageStore(config.dailyClipLimit);
 
 /**
+ * An IPv6 address as all eight groups, so two spellings of one address compare
+ * equal. Null when it is not an IPv6 address at all.
+ */
+function ipv6Groups(raw: string): string[] | null {
+  if (!net.isIPv6(raw)) return null;
+  let addr = raw;
+  // A trailing dotted quad ("::ffff:203.0.113.5") is two groups, not one.
+  const embedded = /:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
+  if (embedded) {
+    const o = embedded[1]!.split(".").map(Number);
+    if (o.length !== 4 || o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    const hi = (o[0]! << 8) | o[1]!;
+    const lo = (o[2]! << 8) | o[3]!;
+    addr = `${addr.slice(0, embedded.index)}:${hi.toString(16)}:${lo.toString(16)}`;
+  }
+  const parts = addr.split("::");
+  if (parts.length > 2) return null;
+  const left = parts[0] ? parts[0]!.split(":") : [];
+  if (parts.length === 1) return left.length === 8 ? left : null;
+  const right = parts[1] ? parts[1]!.split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  return [...left, ...Array<string>(missing).fill("0"), ...right];
+}
+
+/**
+ * The bucket an address is counted against. An address cannot be forged, but on
+ * IPv6 it is not scarce either: an ordinary client is handed a whole /64 and can
+ * source every request from a different address in it, which would give each
+ * request a fresh daily quota and a fresh set of session slots. Counting the /64
+ * makes an IPv6 client exactly as expensive to rotate as an IPv4 one.
+ */
+export function addressBucket(address: string): string {
+  // An IPv6 zone id ("fe80::1%eth0") is local to the host, not part of identity.
+  const bare = (address.split("%")[0] ?? "").trim();
+  if (!bare) return "ip:unknown";
+  if (net.isIPv4(bare)) return `ip:${bare}`;
+  const groups = ipv6Groups(bare);
+  if (!groups) return `ip:${bare}`;
+  const n = groups.map((g) => parseInt(g, 16));
+  // ::ffff:a.b.c.d is an IPv4 client on a dual-stack socket: one address, and
+  // billing its /64 would put every IPv4 client in the world in one bucket.
+  if (n[5] === 0xffff && n.slice(0, 5).every((g) => g === 0)) {
+    return `ip:${n[6]! >> 8}.${n[6]! & 0xff}.${n[7]! >> 8}.${n[7]! & 0xff}`;
+  }
+  return `ip6:${n.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
+}
+
+/**
  * Who to bill a clip to. This has to be something the caller cannot choose, so
  * it is the socket's own address; the app's device id is a label, not identity,
  * and counting it would let anyone reset their quota by editing a header.
@@ -43,11 +101,11 @@ const usage = createUsageStore(config.dailyClipLimit);
 export function caller(c: Context): string {
   if (config.trustProxy) {
     const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-    if (forwarded) return `ip:${forwarded}`;
+    if (forwarded) return addressBucket(forwarded);
   }
   try {
     const remote = getConnInfo(c).remote.address;
-    if (remote) return `ip:${remote}`;
+    if (remote) return addressBucket(remote);
   } catch {
     // No socket behind this request (a test harness, or a different adapter).
   }
@@ -107,11 +165,20 @@ app.get("/health", async (c) => {
 app.post("/sessions", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { source?: string; hints?: string; region?: string };
   const source: CaptureSource = body.source === "screen" ? "screen" : "camera";
-  if (sessionCount() >= config.maxSessions) {
+  const owner = caller(c);
+  // Sessions are cheap to make and only freed by the sweep, and getSession
+  // refreshes touchedAt on every read, so one caller polling its own sessions
+  // could hold every slot for ever and deny the service to everyone else.
+  // Sweeping first means a refusal really means "in use", not "never tidied".
+  if (sessionCount() >= config.maxSessions || sessionsHeldBy(owner) >= config.maxSessionsPerCaller) {
     sweepSessions();
     if (sessionCount() >= config.maxSessions) return c.json({ error: "server busy, try again shortly" }, 503);
+    if (sessionsHeldBy(owner) >= config.maxSessionsPerCaller) {
+      c.header("Retry-After", "60");
+      return c.json({ error: "too many open sessions from this address" }, 503);
+    }
   }
-  const s = createSession(source, cleanHint(body.hints), cleanRegion(body.region));
+  const s = createSession(source, cleanHint(body.hints), cleanRegion(body.region), owner);
   const res: CreateSessionResponse = { sessionId: s.id };
   return c.json(res, 201);
 });

@@ -15,7 +15,10 @@
         "NSCameraUsageDescription": "TVsham points the camera at a TV or laptop screen to identify what is playing.",
         "NSMicrophoneUsageDescription": "TVsham records a few seconds of audio so dialogue can help identify the show.",
         "NSPhotoLibraryUsageDescription": "TVsham reads a screen recording you pick so it can identify the video in it.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
       },
       "userInterfaceStyle": "automatic"
     },
@@ -56,7 +59,8 @@
           "imageWidth": 160,
           "backgroundColor": "#0b0b10"
         }
-      ]
+      ],
+      "./plugins/withLocalNetworkCleartext"
     ],
     "experiments": {
       "typedRoutes": true

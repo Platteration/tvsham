@@ -57,6 +57,12 @@ Or with Docker (ffmpeg included):
 docker compose up --build
 ```
 
+The compose file publishes the port on `127.0.0.1` only, because Docker opens
+published ports by writing its own iptables rules and a host firewall does not
+stop it. To let a phone on your LAN reach it, either put a TLS proxy in front or
+change the mapping to `- "8787:8787"` deliberately, having set `APP_TOKEN` and
+`DAILY_CLIP_LIMIT` first.
+
 Check it: `curl http://localhost:8787/health` →
 
 ```json
@@ -67,8 +73,9 @@ Check it: `curl http://localhost:8787/health` →
 
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
 - The app keeps the access token in the device keychain (`expo-secure-store`), not in plain app storage, and migrates one saved by an earlier build. Settings and the saved library stay in ordinary storage.
-- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. Behind a proxy, set `TRUST_PROXY=true` so the real client address is used. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
-- Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
+- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. An IPv6 client is counted against its /64 rather than its exact address, because a normal allocation hands one client a whole /64 to rotate through; IPv4 callers are counted against the full address. Behind a proxy, set `TRUST_PROXY=true` so the real client address is used. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
+- Sessions are bounded per caller as well as globally (`MAX_SESSIONS_PER_CALLER`), and no session outlives `SESSION_MAX_AGE_MS` however often it is read. Reading a session refreshes its idle timer, so without an absolute lifetime one caller could hold every session slot with a cheap poll and turn the server into a 503 for everyone else.
+- Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
 - Decoding is bounded: every ffmpeg run has a hard timeout, oversized or overlong inputs are refused before a frame is decoded, and the input is restricted to local files. A small file can otherwise declare enormous dimensions and cost gigabytes to decode.
 - No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
@@ -90,6 +97,8 @@ Check it: `curl http://localhost:8787/health` →
 | `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
 | `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
 | `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
+| `MAX_SESSIONS_PER_CALLER` | `20` | Live sessions one connecting address may hold at once. |
+| `SESSION_MAX_AGE_MS` | `3600000` | Absolute session lifetime, whatever the idle timer says. |
 | `RETRY_WAIT_MS` | `45000` | How long a retried clip waits for the original analysis before the server answers 202 and the app polls. 0 answers 202 immediately. |
 | `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |

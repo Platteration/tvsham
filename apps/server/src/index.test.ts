@@ -7,8 +7,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
-import { app, caller, cleanClipKey, cleanHint, safeExtension } from "./index.js";
-import { getSession, sessionCount } from "./sessions.js";
+import { addressBucket, app, caller, cleanClipKey, cleanHint, safeExtension } from "./index.js";
+import { createSession, deleteSession, getSession, sessionCount, sessionsHeldBy, sweepSessions } from "./sessions.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
 
@@ -170,6 +170,67 @@ describe("limits", () => {
 
     assert.equal(withHeaders({ "x-device-id": "aaaaaaaabbbbbbbb" }), withHeaders({ "x-device-id": "ccccccccdddddddd" }));
     assert.equal(withHeaders({ "x-forwarded-for": "1.2.3.4" }), withHeaders({ "x-forwarded-for": "5.6.7.8" }));
+  });
+
+  it("bills an IPv6 caller by its /64, which it cannot rotate out of", () => {
+    // A client on an ordinary IPv6 allocation owns the whole /64 and can send
+    // every request from a different address in it. Counting the exact address
+    // would hand each of those requests its own daily quota.
+    const first = addressBucket("2001:db8:abcd:1234::1");
+    assert.equal(addressBucket("2001:db8:abcd:1234:5:6:7:8"), first);
+    assert.equal(addressBucket("2001:0db8:abcd:1234:0000:0000:0000:00ff"), first);
+    assert.equal(addressBucket("2001:db8:abcd:1234::1%eth0"), first, "a zone id is not identity");
+    // The neighbouring /64 is a different customer and must not share the bucket.
+    assert.notEqual(addressBucket("2001:db8:abcd:1235::1"), first);
+
+    // IPv4 is scarce, so it keeps its full address - including when it arrives
+    // mapped onto a dual-stack socket, where a /64 would be every IPv4 client.
+    assert.equal(addressBucket("203.0.113.7"), "ip:203.0.113.7");
+    assert.equal(addressBucket("::ffff:203.0.113.7"), "ip:203.0.113.7");
+    assert.notEqual(addressBucket("::ffff:203.0.113.8"), addressBucket("::ffff:203.0.113.7"));
+  });
+
+  it("refuses to let one caller hold every session slot", async () => {
+    // Measured relative to what earlier tests left behind, so this asserts the
+    // per-caller cap rather than the order the file happens to run in.
+    const owner = caller({ req: { header: () => undefined } } as unknown as Parameters<typeof caller>[0]);
+    const original = config.maxSessionsPerCaller;
+    (config as { maxSessionsPerCaller: number }).maxSessionsPerCaller = sessionsHeldBy(owner) + 2;
+    const made: string[] = [];
+    try {
+      let refused = 0;
+      for (let i = 0; i < 4; i++) {
+        const res = await app.request("/sessions", { method: "POST" });
+        if (res.status === 201) made.push(((await res.json()) as { sessionId: string }).sessionId);
+        else {
+          refused++;
+          assert.equal(res.status, 503);
+          assert.equal(res.headers.get("retry-after"), "60");
+        }
+      }
+      assert.equal(made.length, 2, "the two sessions below the per-caller cap must be created");
+      assert.equal(refused, 2, "everything above it must be refused");
+      // A different address is unaffected: this is a per-caller cap, not a global one.
+      const other = createSession("camera", undefined, undefined, "ip:198.51.100.9");
+      made.push(other.id);
+    } finally {
+      (config as { maxSessionsPerCaller: number }).maxSessionsPerCaller = original;
+      for (const id of made) deleteSession(id);
+    }
+  });
+
+  it("expires a session that is kept warm by polling", () => {
+    // getSession refreshes touchedAt, so the idle timeout alone is not a
+    // lifetime: one cheap GET every few minutes would hold the slot for ever.
+    const s = createSession("camera", undefined, undefined, "ip:198.51.100.10");
+    try {
+      const born = s.createdAt;
+      s.touchedAt = born + config.sessionMaxAgeMs + 1_000; // read a moment ago
+      sweepSessions(born + config.sessionMaxAgeMs + 1_000);
+      assert.equal(getSession(s.id), undefined, "a session past its absolute age must be swept");
+    } finally {
+      deleteSession(s.id);
+    }
   });
 
   it("refuses to create sessions once the ceiling is reached", async () => {

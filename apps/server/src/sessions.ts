@@ -15,6 +15,12 @@ export interface Session {
   /** ISO 3166-1 country used for "where to watch". */
   region: string;
   last?: { identification: Identification; links: ResolvedLink[]; watch: WatchOption[]; cast: CastMember[] };
+  /**
+   * The caller bucket that created it. Sessions are otherwise anonymous, and a
+   * table with no owners cannot tell "500 users" from "one address holding
+   * every slot".
+   */
+  owner: string;
   /** Serialises clip processing so two uploads for one session never race. */
   busy: Promise<unknown>;
   /** Clips of this session currently being analysed. */
@@ -23,7 +29,12 @@ export interface Session {
 
 const sessions = new Map<string, Session>();
 
-export function createSession(source: CaptureSource, hints?: string, region = config.defaultRegion): Session {
+export function createSession(
+  source: CaptureSource,
+  hints?: string,
+  region = config.defaultRegion,
+  owner = "ip:unknown",
+): Session {
   const s: Session = {
     id: randomUUID(),
     createdAt: Date.now(),
@@ -33,6 +44,7 @@ export function createSession(source: CaptureSource, hints?: string, region = co
     seenClipKeys: new Set(),
     secondsAnalysed: 0,
     region,
+    owner,
     busy: Promise.resolve(),
     analysing: 0,
   };
@@ -53,7 +65,10 @@ export function deleteSession(id: string): void {
 export function sweepSessions(now = Date.now()): number {
   let n = 0;
   for (const [id, s] of sessions) {
-    if (now - s.touchedAt > config.sessionTtlMs) {
+    // Idle sessions go, and so do old ones however recently they were read:
+    // getSession refreshes touchedAt, so an idle timeout alone lets a caller
+    // hold a slot indefinitely by polling its own session.
+    if (now - s.touchedAt > config.sessionTtlMs || now - s.createdAt > config.sessionMaxAgeMs) {
       sessions.delete(id);
       n++;
     }
@@ -63,4 +78,11 @@ export function sweepSessions(now = Date.now()): number {
 
 export function sessionCount(): number {
   return sessions.size;
+}
+
+/** How many live sessions one caller bucket is holding. */
+export function sessionsHeldBy(owner: string): number {
+  let n = 0;
+  for (const s of sessions.values()) if (s.owner === owner) n++;
+  return n;
 }

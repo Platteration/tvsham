@@ -34,7 +34,11 @@ export interface ClipProducer {
 
 export interface IdentifyDeps {
   createSession(source: CaptureSource, hints?: string): Promise<string>;
-  uploadClip(sessionId: string, uri: string, opts: { clipKey: string }): Promise<RecognitionResult>;
+  uploadClip(
+    sessionId: string,
+    uri: string,
+    opts: { clipKey: string; signal?: AbortSignal },
+  ): Promise<RecognitionResult>;
   endSession(sessionId: string): void;
   /** Keep a clip that never reached the server. Returns null if it could not be kept. */
   enqueue(uri: string, source: CaptureSource, reason: string, hints?: string): Promise<unknown | null>;
@@ -55,6 +59,48 @@ export interface IdentifyOptions {
   producer: ClipProducer;
   maxClips: number;
   hints?: string;
+  /**
+   * Aborted when this run is cancelled. Without it the upload stays open after
+   * the user has stopped, and its answer arrives for a run nobody is watching.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * One cancellation token per run.
+ *
+ * A single shared boolean cannot do this job: cancelling sets it and the next
+ * start clears it, so a run cancelled mid-upload sees itself as live again when
+ * its request finally resolves and reports its answer over the run that
+ * replaced it. Each run compares its own generation instead, which no later run
+ * can undo, and gets a signal that closes the request it is waiting on rather
+ * than leaving it open to be paid for twice.
+ */
+export interface RunGuard {
+  /** Begin a run, cancelling whatever was running before it. */
+  begin(): { isCancelled(): boolean; signal: AbortSignal };
+  /** Cancel the current run. Everything started before this stays cancelled. */
+  cancel(): void;
+}
+
+export function createRunGuard(): RunGuard {
+  let generation = 0;
+  let inFlight: AbortController | null = null;
+  const stop = () => {
+    generation++;
+    inFlight?.abort();
+    inFlight = null;
+  };
+  return {
+    begin() {
+      stop();
+      const mine = generation;
+      const own = new AbortController();
+      inFlight = own;
+      return { isCancelled: () => generation !== mine, signal: own.signal };
+    },
+    cancel: stop,
+  };
 }
 
 function messageFor(err: unknown): string {
@@ -103,7 +149,9 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
       unsentClipUri = uri;
 
       deps.onState({ phase: "uploading", clip, result: latest, error: null });
-      const upload = overNetwork(() => deps.uploadClip(sessionId!, uri, { clipKey: `${sessionId}:${clip}` }));
+      const upload = overNetwork(() =>
+        deps.uploadClip(sessionId!, uri, { clipKey: `${sessionId}:${clip}`, signal: opts.signal }),
+      );
       // Keep listening while the server thinks.
       const hasNext = clip < maxClips;
       recording = hasNext ? producer.record() : Promise.resolve(null);

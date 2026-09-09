@@ -2,6 +2,7 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { HealthResponse } from "@tvsham/shared";
 import { health } from "@/api";
+import { serverUrlWarning } from "@/settings";
 import { updateSettings, useSettings } from "@/store";
 import { ACCENTS, ACCENT_NAMES, makeStyles, radius, space, useTheme, type AccentName, type Appearance } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
@@ -14,6 +15,8 @@ export default function SettingsScreen() {
   const [token, setToken] = useState(settings.token);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // Saving drops a URL it cannot use, so say so while the user can still fix it.
+  const urlWarning = serverUrlWarning(serverUrl);
 
   const save = async () => {
     await updateSettings({ serverUrl: serverUrl.trim(), token: token.trim() });
@@ -62,6 +65,7 @@ export default function SettingsScreen() {
             style={styles.input}
             onBlur={() => void save()}
           />
+          {urlWarning ? <Text style={[styles.status, { color: c.warning }]}>{urlWarning}</Text> : null}
           <Text style={styles.label}>Access token (optional)</Text>
           <TextInput
             value={token}

@@ -66,6 +66,12 @@ export const config = {
   corsOrigin: env("CORS_ORIGIN"),
   /** Live sessions to keep before refusing new ones. */
   maxSessions: positiveInt(env("MAX_SESSIONS"), 500),
+  /**
+   * Live sessions one caller may hold at once. Creating a session is free and
+   * unauthenticated, so without this one address can take every slot in the
+   * table and the server answers 503 for everyone else.
+   */
+  maxSessionsPerCaller: positiveInt(env("MAX_SESSIONS_PER_CALLER"), 20),
   /** Clips one device may have analysed per day. 0 turns the cap off. */
   dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
@@ -74,5 +80,10 @@ export const config = {
   retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */
   sessionTtlMs: 15 * 60 * 1000,
+  /**
+   * ...and no session lives longer than this whatever it does. Reading a session
+   * refreshes its idle clock, so the idle timeout on its own is not a lifetime.
+   */
+  sessionMaxAgeMs: positiveInt(env("SESSION_MAX_AGE_MS"), 60 * 60 * 1000),
   version: "0.1.0",
 } as const;

@@ -4,7 +4,7 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
-import { DEFAULT_SETTINGS, sanitise, type Settings } from "./settings";
+import { DEFAULT_SETTINGS, cleanServerUrl, sanitise, type Settings } from "./settings";
 
 /* ----------------------------- tiny store core ---------------------------- */
 
@@ -43,12 +43,16 @@ const TOKEN_KEY = "tvsham.token.v1";
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
-/** In development, guess the server is on the same machine as the Metro bundler. */
+/**
+ * In development, guess the server is on the same machine as the Metro bundler.
+ * Checked like any other server address: a default is still something the app
+ * would post video and a token to.
+ */
 function defaultServerUrl(): string {
   const configured = (Constants.expoConfig?.extra as { serverUrl?: string } | undefined)?.serverUrl;
-  if (configured) return configured;
+  if (configured) return cleanServerUrl(configured);
   const host = Constants.expoConfig?.hostUri?.split(":")[0];
-  return host ? `http://${host}:8787` : "";
+  return host ? cleanServerUrl(`http://${host}:8787`) : "";
 }
 
 const settingsStore = createStore<Settings>({ ...DEFAULT_SETTINGS, serverUrl: defaultServerUrl() });

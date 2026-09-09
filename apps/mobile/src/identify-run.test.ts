@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
-import { runIdentification, type ClipProducer, type IdentifyDeps, type IdentifyState } from "./identify-run.js";
+import {
+  createRunGuard,
+  runIdentification,
+  type ClipProducer,
+  type IdentifyDeps,
+  type IdentifyState,
+} from "./identify-run.js";
 
 class FakeApiError extends Error {}
 
@@ -238,5 +244,97 @@ describe("identification loop", () => {
     });
     await run(h, producer(["a.mp4"]));
     assert.deepEqual(h.endedSessions, ["s1"]);
+  });
+
+  it("hands the run's abort signal to the upload", async () => {
+    // Nothing else can close an upload that is already open, so a cancel with
+    // no signal leaves the clip being analysed and paid for after the user
+    // has stopped.
+    const signals: Array<AbortSignal | undefined> = [];
+    const h = harness({
+      uploadClip: async (_id, _uri, opts) => {
+        signals.push(opts.signal);
+        return result();
+      },
+    });
+    const guard = createRunGuard();
+    const own = guard.begin();
+    await runIdentification(h.deps, {
+      source,
+      producer: producer(["a.mp4"]),
+      maxClips: 1,
+      signal: own.signal,
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0], own.signal);
+    assert.equal(signals[0]?.aborted, false);
+    guard.cancel();
+    assert.equal(own.signal.aborted, true, "cancelling must abort the request the run is waiting on");
+  });
+
+  it("never lets a cancelled run report over the run that replaced it", async () => {
+    // The sequence a user hits easily: stop while a clip is uploading, then tap
+    // Identify again. With one shared cancelled flag the restart clears it, and
+    // the first upload - still open - finishes believing it is live and pushes
+    // the previous session's answer at the new run.
+    const guard = createRunGuard();
+    let release: (r: RecognitionResult) => void = () => {};
+    let uploading = false;
+    const stale = harness({
+      upload: () =>
+        new Promise<RecognitionResult>((resolve) => {
+          release = resolve;
+          uploading = true;
+        }),
+    });
+    const firstRun = guard.begin();
+    const first = runIdentification(
+      { ...stale.deps, isCancelled: firstRun.isCancelled },
+      { source, producer: producer(["a.mp4"]), maxClips: 1, signal: firstRun.signal },
+    );
+    // Let it get as far as the upload.
+    for (let i = 0; i < 100 && !uploading; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.ok(uploading, "the first run should be waiting on its upload");
+
+    guard.cancel(); // the user taps stop
+    const secondRun = guard.begin(); // ...and then Identify again
+    assert.equal(secondRun.isCancelled(), false, "the new run is live");
+    assert.equal(firstRun.isCancelled(), true, "and the old one stays cancelled");
+
+    release(result({ sessionId: "stale", message: "Stale answer." }));
+    await first;
+
+    assert.deepEqual(stale.results, [], "a cancelled run must not deliver a result");
+    assert.ok(
+      stale.states.every((s) => s.phase !== "done"),
+      "nor report over the state of the run that replaced it",
+    );
+  });
+});
+
+describe("run guard", () => {
+  it("cancels each run separately rather than sharing one flag", () => {
+    const guard = createRunGuard();
+    const a = guard.begin();
+    const b = guard.begin();
+    assert.equal(a.isCancelled(), true, "beginning a run cancels the one before it");
+    assert.equal(b.isCancelled(), false);
+    guard.cancel();
+    assert.equal(b.isCancelled(), true);
+    const c = guard.begin();
+    assert.equal(c.isCancelled(), false);
+    assert.equal(a.isCancelled(), true, "a cancelled run is never resurrected by a later start");
+    assert.equal(b.isCancelled(), true);
+  });
+
+  it("aborts the request each run is waiting on", () => {
+    const guard = createRunGuard();
+    const a = guard.begin();
+    assert.equal(a.signal.aborted, false);
+    const b = guard.begin();
+    assert.equal(a.signal.aborted, true, "starting again closes the previous upload");
+    assert.equal(b.signal.aborted, false);
+    guard.cancel();
+    assert.equal(b.signal.aborted, true);
   });
 });

@@ -5,6 +5,7 @@ import type {
   RecognitionResult,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
+import { canSendTokenTo } from "./settings";
 import { getDeviceId, getSettings } from "./store";
 
 export class ApiError extends Error {
@@ -23,10 +24,20 @@ function baseUrl(): string {
   return url;
 }
 
-function headers(extra: Record<string, string> = {}): Record<string, string> {
+function headers(base: string, extra: Record<string, string> = {}): Record<string, string> {
   const h: Record<string, string> = { ...extra };
   const token = getSettings().token.trim();
-  if (token) h.Authorization = `Bearer ${token}`;
+  if (token) {
+    // A bearer token on a cleartext hop to a public host is readable by
+    // everyone on the path, and it spends the operator's money. Say why rather
+    // than sending it and letting the server answer an unexplained 401.
+    if (!canSendTokenTo(base)) {
+      throw new ApiError(
+        "Refusing to send your access token over plain HTTP to an address outside your network. Use an https:// server URL.",
+      );
+    }
+    h.Authorization = `Bearer ${token}`;
+  }
   const device = getDeviceId();
   if (device) h["X-Device-Id"] = device;
   return h;
@@ -55,8 +66,9 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export async function health(timeoutMs = 6000): Promise<HealthResponse> {
-  const res = await fetch(`${baseUrl()}/health`, {
-    headers: headers(),
+  const base = baseUrl();
+  const res = await fetch(`${base}/health`, {
+    headers: headers(base),
     signal: AbortSignal.timeout(timeoutMs),
   });
   return parse<HealthResponse>(res);
@@ -72,9 +84,10 @@ function region(): string | undefined {
 }
 
 export async function createSession(source: CaptureSource, hints?: string): Promise<string> {
-  const res = await fetch(`${baseUrl()}/sessions`, {
+  const base = baseUrl();
+  const res = await fetch(`${base}/sessions`, {
     method: "POST",
-    headers: headers({ "Content-Type": "application/json" }),
+    headers: headers(base, { "Content-Type": "application/json" }),
     body: JSON.stringify({ source, ...(hints ? { hints } : {}), ...(region() ? { region: region() } : {}) }),
   });
   return (await parse<CreateSessionResponse>(res)).sessionId;
@@ -94,14 +107,15 @@ export async function uploadClip(
   // Sent as a header as well as a field so the server can recognise a retry of a
   // clip it already analysed before it buffers the body again.
   const clipKey = (opts.clipKey ?? fileUri).replace(/[^A-Za-z0-9:_-]/g, "").slice(-128) || "clip";
+  const base = baseUrl();
   const send = async () => {
     const form = new FormData();
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
     form.append("clip", { uri: fileUri, name, type });
     form.append("clipKey", clipKey);
-    const res = await fetch(`${baseUrl()}/sessions/${sessionId}/clips`, {
+    const res = await fetch(`${base}/sessions/${sessionId}/clips`, {
       method: "POST",
-      headers: headers({ "X-Clip-Key": clipKey }),
+      headers: headers(base, { "X-Clip-Key": clipKey }),
       body: form,
       signal: opts.signal ?? null,
     });
@@ -126,8 +140,9 @@ export async function uploadClip(
 
 /** The session's current state, used to follow up a clip the server is still analysing. */
 export async function fetchSession(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
-  const res = await fetch(`${baseUrl()}/sessions/${sessionId}`, {
-    headers: headers(),
+  const base = baseUrl();
+  const res = await fetch(`${base}/sessions/${sessionId}`, {
+    headers: headers(base),
     signal: signal ?? null,
   });
   return parse<RecognitionResult>(res);
@@ -155,7 +170,8 @@ async function pollUntilSettled(sessionId: string, signal?: AbortSignal): Promis
 
 export async function endSession(sessionId: string): Promise<void> {
   try {
-    await fetch(`${baseUrl()}/sessions/${sessionId}`, { method: "DELETE", headers: headers() });
+    const base = baseUrl();
+    await fetch(`${base}/sessions/${sessionId}`, { method: "DELETE", headers: headers(base) });
   } catch {
     /* best effort */
   }

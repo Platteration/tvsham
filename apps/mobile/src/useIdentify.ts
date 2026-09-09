@@ -3,6 +3,7 @@ import { MAX_CLIPS_PER_SESSION, type CaptureSource } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import {
   IDLE_STATE,
+  createRunGuard,
   runIdentification,
   type ClipProducer,
   type IdentifyState,
@@ -19,12 +20,13 @@ export type { ClipProducer, IdentifyState, Phase } from "./identify-run";
  */
 export function useIdentify() {
   const [state, setState] = useState<IdentifyState>(IDLE_STATE);
-  const cancelled = useRef(false);
+  // One token per run, not one flag for all of them: see createRunGuard.
+  const guard = useRef(createRunGuard());
   const sessionRef = useRef<string | null>(null);
   const producerRef = useRef<ClipProducer | null>(null);
 
   const cancel = useCallback(() => {
-    cancelled.current = true;
+    guard.current.cancel();
     producerRef.current?.stop?.();
     const id = sessionRef.current;
     sessionRef.current = null;
@@ -36,21 +38,24 @@ export function useIdentify() {
 
   const start = useCallback(
     async (source: CaptureSource, producer: ClipProducer, opts: { maxClips?: number; hints?: string } = {}) => {
-      cancelled.current = false;
+      const run = guard.current.begin();
       producerRef.current = producer;
       await runIdentification(
         {
           createSession,
           uploadClip,
           endSession: (id) => {
-            sessionRef.current = null;
+            // Only forget the session this run owns. A run that finishes late
+            // must not clear the id of the run that replaced it, or a later
+            // cancel has nothing to end server-side.
+            if (sessionRef.current === id) sessionRef.current = null;
             void endSession(id);
           },
           enqueue,
           isApiError: (err) => err instanceof ApiError,
           onResult: (result) => setLastResult({ result, source }),
           onState: setState,
-          isCancelled: () => cancelled.current,
+          isCancelled: run.isCancelled,
           onSession: (id) => {
             sessionRef.current = id;
           },
@@ -59,6 +64,7 @@ export function useIdentify() {
           source,
           producer,
           maxClips: opts.maxClips ?? MAX_CLIPS_PER_SESSION,
+          signal: run.signal,
           ...(opts.hints ? { hints: opts.hints } : {}),
         },
       );
@@ -67,7 +73,7 @@ export function useIdentify() {
   );
 
   const reset = useCallback(() => {
-    cancelled.current = true;
+    guard.current.cancel();
     setState(IDLE_STATE);
   }, []);
 

@@ -17,10 +17,17 @@ module.exports = [
     },
   },
   {
-    // Build scripts run in Node, not in the app.
-    files: ["scripts/**/*.mjs", "scripts/**/*.js"],
+    // Build scripts and config plugins run in Node, not in the app.
+    files: ["scripts/**/*.mjs", "scripts/**/*.js", "plugins/**/*.js"],
     languageOptions: {
-      globals: { Buffer: "readonly", console: "readonly", process: "readonly" },
+      globals: {
+        Buffer: "readonly",
+        console: "readonly",
+        process: "readonly",
+        module: "writable",
+        require: "readonly",
+        __dirname: "readonly",
+      },
     },
   },
 ];
