@@ -2,6 +2,20 @@
 
 Two independent reviewers read every first-party file in this repository; a third then re-read each security or bug claim against the code and tried to refute it. Only claims that survived that check are listed as findings; the ones that did not are recorded at the end so they are not re-raised.
 
+## Status — what has been fixed
+
+These findings are now fixed on `claude/repo-review-security-baiyud`, each with a regression test:
+
+- **SEC-1**
+- **BUG-1**
+- **BUG-3**
+- **MISS-1**
+- **MISS-2**
+
+The rest of this document is the review as written, and the fixed items are left in place so the reasoning behind each change stays with it.
+
+Repository hardening applied here as well: every GitHub Action is pinned to a commit rather than a floating tag, each workflow declares a least-privilege `permissions` block, and a Dependabot config, a licence and a security policy are in place.
+
 ## Summary
 
 TVsham is a 'Shazam for video' monorepo: an Expo SDK 57 / React Native 0.86 app (expo-router, expo-camera, expo-image-picker) records 8 s clips or takes a screen recording and uploads it to a self-hosted Node 22 + Hono server that extracts frames/audio with ffmpeg, asks claude-opus-5 (adaptive thinking, web_search_20260209, then a messages.parse structured extraction) and verifies the answer against Wikipedia, YouTube oEmbed and TMDB. For a 33-commit solo side project it is unusually mature: strict TypeScript with noUncheckedIndexedAccess, node:test suites on both sides (not vitest) including an end-to-end ffmpeg pipeline test and a WCAG contrast audit, an eval harness with a calibration comparison, and documented security invariants. The headline gaps are (1) cost is still unmeasured: response.usage is never read, and a per-clip frame-count sentence at the top of the prompt defeats prompt caching across the 2-4 clips of a session, while the README steers toward a Sonnet cascade before the cheaper single-model/lower-effort option has been measured; (2) production builds cannot actually reach the LAN server the README describes, because Android release builds block cleartext HTTP and iOS ATS blocks it unless app.json opts in; (3) the Docker image runs the server against TypeScript source in packages/shared and silently depends on Node >=22.18 type stripping while engines claims >=20 (Node 20 is EOL); (4) repo hygiene: no LICENSE (which contradicts a self-host product), no SECURITY.md, no Dependabot, unpinned actions, an npm ci||npm install fallback, no lint on the server; and (5) a handful of concrete accessibility bugs (no reduced-motion handling; Watched chip and YouTube/Instagram badges fail AA in light mode) that the existing palette test does not cover.
