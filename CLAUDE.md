@@ -40,7 +40,8 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 - No test can hit the real API. Verify changes with typecheck, the unit tests, and
   `npx expo export` for the app bundle.
 - App logic worth testing goes in a React-Native-free module (`palette.ts`,
-  `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`); the `.tsx` files
+  `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`, `shapes.ts`,
+  `deadline.ts`); the `.tsx` files
   then hold only rendering. That is what makes `npm test` possible in `apps/mobile` at all.
 - Colour changes must keep `palette.test.ts` green: it checks every text pairing in
   both schemes and all four accents against WCAG AA.
@@ -69,6 +70,18 @@ will pass typecheck and tests but reopen the hole.
   from an `intent://` URL.
 - **CORS stays off unless `CORS_ORIGIN` is set.** The app is not a browser; permissive
   headers would let any web page spend the operator's Claude budget.
+- **Admit an upload before its body is read.** `parseBody` materialises the whole
+  multipart body in the request's own turn, before the `s.busy` chain and before
+  `limiter.run`, so `MAX_UPLOADS_IN_FLIGHT` is counted at request entry and released
+  in a `finally`. The limiter bounds how many clips are *analysed*, which does not
+  bound how much is resident.
+- **ffmpeg chooses the demuxer from the content, not from the name.** `INPUT_GUARDS`
+  carries `-format_whitelist` as well as `-protocol_whitelist`: an upload saved as
+  clip.mp4 that begins `ffconcat version 1.0` is opened by the concat demuxer, which
+  then names other local files for the still-permitted `file` protocol to read.
+- **What comes back from the server, or off the disk, is coerced rather than cast**
+  (`shapes.ts`). The hop is cleartext by default and the payload is then persisted,
+  so a `links` that is not an array is a blank screen that survives a restart.
 
 ## Things that trip people up
 

@@ -16,4 +16,10 @@ services:
       - apps/server/.env
     environment:
       - PORT=8787
+    # An upload is held in memory while it is analysed (MAX_UPLOADS_IN_FLIGHT
+    # bounds how many at once, at roughly twice the clip size each), so a burst
+    # of large clips should meet a limit on this container rather than the
+    # host's OOM killer, which picks its victim by size and may not pick this.
+    # Raise both together, never one alone.
+    mem_limit: 2g
     restart: unless-stopped

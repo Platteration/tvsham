@@ -45,11 +45,22 @@ async function run(args: string[]): Promise<{ stdout: string; stderr: string }> 
 }
 
 /**
- * The input is chosen by whoever uploaded it: only local files, and only the
- * demuxers we expect. Without this, ffmpeg picks a demuxer from the file's
- * content and the .mp4 extension means nothing.
+ * The input is chosen by whoever uploaded it, so both halves of what ffmpeg may
+ * do with it are pinned down. `-protocol_whitelist file` keeps it off the
+ * network. `-format_whitelist` keeps it to the containers a phone records:
+ * ffmpeg picks the demuxer from the file's *content*, so the .mp4 extension we
+ * force on the saved name means nothing — an upload that begins
+ * "ffconcat version 1.0" is opened by the concat demuxer, which then names
+ * other local files for the still-permitted `file` protocol to open, and
+ * whatever lands in a frame is described back to the uploader in `evidence`.
+ * Both options apply to the input that follows them.
  */
-const INPUT_GUARDS = ["-protocol_whitelist", "file"];
+const INPUT_GUARDS = [
+  "-protocol_whitelist",
+  "file",
+  "-format_whitelist",
+  "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts",
+];
 
 export interface Probe {
   seconds: number;

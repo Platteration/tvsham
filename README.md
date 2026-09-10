@@ -27,7 +27,7 @@ There is no public fingerprint database for TV and film the way there is for mus
 3. If a speech‑to‑text provider is configured, the audio becomes a transcript of the dialogue.
 4. Claude looks at the frames (on‑screen titles, captions, channel names, faces, sets, app UI) and the transcript, and uses **web search** to verify: a quoted line of dialogue usually pins down the exact episode; a title plus channel pins down the YouTube video.
 5. The server verifies the answer against Wikipedia's API (article summary, thumbnail) or YouTube's oEmbed (title, channel, thumbnail) so the link you get is real, and falls back to a search link when it isn't sure.
-6. If confidence is low, the app keeps listening. While one clip is being analysed the next is already recording, up to four clips (~32 s). Every clip is deleted from the server as soon as it has been analysed.
+6. If confidence is low, the app keeps listening. While one clip is being analysed the next is already recording, up to four clips (~32 s). Every clip is deleted from the server as soon as it has been analysed, and anything a hard stop left behind is swept on the next start and every minute after it.
 
 ### Attribution
 
@@ -96,13 +96,15 @@ Check it: `curl http://localhost:8787/health` →
 | `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
 | `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
 | `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
+| `MAX_UPLOADS_IN_FLIGHT` | `2 × MAX_CONCURRENT` | Uploads that may be in memory at once, counted before the body is read. Further ones get a 503 with `Retry-After`. |
 | `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
 | `MAX_SESSIONS_PER_CALLER` | `20` | Live sessions one connecting address may hold at once. |
 | `SESSION_MAX_AGE_MS` | `3600000` | Absolute session lifetime, whatever the idle timer says. |
 | `RETRY_WAIT_MS` | `45000` | How long a retried clip waits for the original analysis before the server answers 202 and the app polls. 0 answers 202 immediately. |
 | `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
-| `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
+| `STT_URL` | – | Where `whisper-http` sends the audio. Required by it — there is no default, because a recording of your room should go where you say and nowhere else. The server refuses to start without it. |
+| `STT_API_KEY`, `STT_MODEL`, `STT_TIMEOUT_MS` | – | The rest of the `whisper-http` settings; the timeout defaults to `60000`. |
 | `YOUTUBE_API_KEY` | – | Optional YouTube Data API v3 key for a proper search fallback. Without it, direct links are still verified via oEmbed. |
 | `WIKIPEDIA_LANG` | `en` | Wikipedia edition for article lookups. |
 | `TMDB_API_KEY` | – | Optional TMDB key. Adds "where to watch" and a cast list to film and TV results. |

@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import { isHopeless } from "./queue-policy";
+import { cleanQueuedClips } from "./shapes";
 import { setLastResult } from "./store";
 
 /**
@@ -49,11 +50,13 @@ function pendingDir(): Directory {
 export async function loadQueue(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(QUEUE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as QueuedClip[]) : [];
+    // Coerced, not cast: runFlush walks this list unattended on every
+    // foreground event and hands each entry's uri and source to the server.
+    const parsed = cleanQueuedClips(raw ? JSON.parse(raw) : []);
     // Drop anything whose file the OS reclaimed while we were away.
-    queue = Array.isArray(parsed) ? parsed.filter((c) => fileExists(c.uri)) : [];
+    queue = parsed.filter((c) => fileExists(c.uri));
     emit();
-    if (Array.isArray(parsed) && parsed.length !== queue.length) await persist();
+    if (parsed.length !== queue.length) await persist();
   } catch {
     queue = [];
   }
@@ -118,7 +121,8 @@ export async function enqueue(
   }
 }
 
-function discardFile(uri: string): void {
+/** Delete a recording nothing refers to any more. Exported for the identification loop. */
+export function discardFile(uri: string): void {
   try {
     const f = new File(uri);
     if (f.exists) f.delete();

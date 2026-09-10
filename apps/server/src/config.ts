@@ -16,6 +16,9 @@ function nonNegativeInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
+/** Read once so the in-flight ceiling below can be derived from it. */
+const maxConcurrent = positiveInt(env("MAX_CONCURRENT"), 3);
+
 export const config = {
   port: Number(env("PORT", "8787")),
   appToken: env("APP_TOKEN"),
@@ -30,9 +33,17 @@ export const config = {
   ffmpegPath: env("FFMPEG_PATH"),
   stt: {
     provider: env("STT_PROVIDER", "none")! as "none" | "whisper-http",
-    url: env("STT_URL", "https://api.openai.com/v1/audio/transcriptions")!,
+    /**
+     * Where audio is sent for transcription. No default on purpose: this server
+     * is self-hosted, and a default of somebody's hosted API would mean turning
+     * dialogue on quietly shipped a minute of the operator's living room to a
+     * third party they never chose. Required when the provider is whisper-http.
+     */
+    url: env("STT_URL"),
     apiKey: env("STT_API_KEY"),
     model: env("STT_MODEL", "whisper-1")!,
+    /** Deadline for one transcription. Transcribing a minute of audio is slow; hanging is worse. */
+    timeoutMs: positiveInt(env("STT_TIMEOUT_MS"), 60_000),
   },
   youtubeApiKey: env("YOUTUBE_API_KEY"),
   /** Optional TMDB v3 key: adds "where to watch" and a cast list. */
@@ -75,7 +86,15 @@ export const config = {
   /** Clips one device may have analysed per day. 0 turns the cap off. */
   dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
-  maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
+  maxConcurrent,
+  /**
+   * Uploads that may be resident at once, counted before the body is read.
+   * Each one costs about twice maxUploadBytes in memory while it is in flight,
+   * and analysis is the slow part, so this is the queue in front of
+   * maxConcurrent — and the reason a burst answers 503 instead of exhausting
+   * the heap. Raise it only alongside the memory the process actually has.
+   */
+  maxUploadsInFlight: positiveInt(env("MAX_UPLOADS_IN_FLIGHT"), maxConcurrent * 2),
   /** Longest a retried clip waits for the original analysis before answering. */
   retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */

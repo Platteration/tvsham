@@ -33,7 +33,7 @@ import {
   type Session,
 } from "./sessions.js";
 import { enrich } from "./tmdb.js";
-import { sttProvider } from "./stt.js";
+import { sttProvider, sttWarning } from "./stt.js";
 import { createUsageStore } from "./usage.js";
 
 /** Frames one session may carry into a single recognition request. */
@@ -195,6 +195,19 @@ app.delete("/sessions/:id", (c) => {
 });
 
 /**
+ * Uploads whose body is being read, queued or analysed right now.
+ *
+ * `parseBody` materialises the whole multipart body — up to maxUploadBytes — in
+ * the request's own turn, and processClip then copies it into a Buffer, so each
+ * upload in flight costs roughly twice the clip in resident memory until it is
+ * finished with. Sessions are unauthenticated and cheap to make, so without a
+ * ceiling here a burst of large clips is an out-of-memory kill rather than a
+ * 503. Counted around the whole request, because the File stays alive for as
+ * long as the clip is being worked on.
+ */
+let uploadsInFlight = 0;
+
+/**
  * Upload one clip. Multipart form with a `clip` file field (mp4 / mov / webm).
  * The response reflects *all* clips in the session so far.
  */
@@ -225,6 +238,24 @@ app.post("/sessions/:id/clips", async (c) => {
   // An over-quota caller should not get to make us buffer the body at all. The
   // quota itself is only spent further down, once the clip is really analysed.
   if (usage.remaining(billTo) <= 0) return overLimit(c, s);
+  // Nor should anyone get to make us buffer more bodies at once than this
+  // process has memory for. The limiter below bounds how many clips are
+  // *analysed* at a time, which is a different thing: parseBody materialises
+  // the whole upload before any of that is reached.
+  if (uploadsInFlight >= config.maxUploadsInFlight) {
+    c.header("Retry-After", "5");
+    return c.json({ error: "server busy, try again shortly" }, 503);
+  }
+  uploadsInFlight++;
+  try {
+    return await receiveClip(c, s, billTo, headerKey);
+  } finally {
+    uploadsInFlight--;
+  }
+});
+
+/** The rest of the upload: everything from here on holds the clip in memory. */
+async function receiveClip(c: Context, s: Session, billTo: string, headerKey: string | undefined) {
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
@@ -263,7 +294,7 @@ app.post("/sessions/:id/clips", async (c) => {
     console.error("[clip]", err);
     return c.json({ ...describe(s), status: "failed", wantsMore: false, message: clientErrorMessage(err) }, 500);
   }
-});
+}
 
 async function processClip(s: Session, clip: File, clipKey?: string): Promise<void> {
   const workDir = path.join(config.tmpDir, `${s.id}-${s.clips}`);
@@ -443,9 +474,53 @@ function clientErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Delete staged clips nobody is coming back for. `processClip` removes its own
+ * work directory in a `finally`, which covers a thrown error but not a SIGKILL,
+ * an out-of-memory kill or a container restart mid-analysis — and what is left
+ * behind is a recording of somebody's living room, in a server whose README
+ * promises the clip is deleted as soon as it has been analysed. `olderThanMs`
+ * of 0 removes everything, which is what a fresh start wants; the periodic
+ * sweep passes an age instead so it cannot delete a directory in use.
+ */
+export async function sweepTmpDir(olderThanMs = 0, now = Date.now()): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(config.tmpDir);
+  } catch {
+    return 0; // No directory yet, or not readable: nothing to sweep either way.
+  }
+  let removed = 0;
+  for (const name of entries) {
+    const full = path.join(config.tmpDir, name);
+    try {
+      if (olderThanMs > 0) {
+        const stat = await fs.stat(full);
+        if (now - stat.mtimeMs < olderThanMs) continue;
+      }
+      await fs.rm(full, { recursive: true, force: true });
+      removed++;
+    } catch {
+      // Raced with the request that owns it; the next sweep will get it.
+    }
+  }
+  return removed;
+}
+
 async function main(): Promise<void> {
+  const sttProblem = sttWarning();
+  if (sttProblem) {
+    // Fail loudly rather than transcribing to somewhere the operator did not choose.
+    console.error(`[server] ${sttProblem}`);
+    process.exit(1);
+  }
   await fs.mkdir(config.tmpDir, { recursive: true });
-  setInterval(() => sweepSessions(), 60_000).unref();
+  // Nothing is in flight yet, so anything here is left over from a hard stop.
+  await sweepTmpDir();
+  setInterval(() => {
+    sweepSessions();
+    void sweepTmpDir(config.sessionTtlMs);
+  }, 60_000).unref();
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.warn("[server] ANTHROPIC_API_KEY is not set; recognition requests will fail until it is.");
   }

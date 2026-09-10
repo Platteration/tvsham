@@ -5,6 +5,7 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 import { DEFAULT_SETTINGS, cleanServerUrl, sanitise, type Settings } from "./settings";
+import { cleanSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
 
@@ -94,15 +95,17 @@ export function hydrate(): Promise<void> {
         deviceId = newDeviceId();
         await AsyncStorage.setItem(DEVICE_KEY, deviceId);
       }
-      const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
-      const token = await readToken(savedSettings?.token);
+      const savedSettings = readJson(s?.[1]) as Partial<Settings> | null;
+      const { token, migrated } = await readToken(savedSettings?.token);
       if (savedSettings || token) {
         settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings, token }));
       }
-      const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
-      if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
-      const savedHistory = h?.[1] ? (JSON.parse(h[1]) as SavedItem[]) : null;
-      if (Array.isArray(savedHistory)) historyStore.set(savedHistory);
+      // Finish the migration now rather than whenever the user next happens to
+      // change a setting: until this record is rewritten the token is still
+      // sitting in the plain file the keychain copy exists to get it out of.
+      if (migrated) await persistSettings();
+      if (l?.[1]) libraryStore.set(cleanSavedItems(readJson(l[1])));
+      if (h?.[1]) historyStore.set(cleanSavedItems(readJson(h[1])));
     } catch (err) {
       console.warn("[store] failed to hydrate", err);
     } finally {
@@ -120,30 +123,46 @@ export function useSettings(): Settings {
   return useSyncExternalStore(settingsStore.subscribe, settingsStore.get, settingsStore.get);
 }
 
-export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
-  const { token, ...rest } = settingsStore.get();
-  await Promise.all([
-    AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...rest, token: "" })),
-    writeToken(token),
-  ]);
+/** Stored JSON, or null: a corrupt record must not take the rest of hydrate down with it. */
+function readJson(raw: string | null | undefined): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
-/** Read the token from the keychain, migrating one left in AsyncStorage by an older build. */
-async function readToken(legacy: string | undefined): Promise<string> {
+/** The settings record, always written without the token: that lives in the keychain. */
+async function persistSettings(): Promise<void> {
+  const { token: _token, ...rest } = settingsStore.get();
+  await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...rest, token: "" }));
+}
+
+export async function updateSettings(patch: Partial<Settings>): Promise<void> {
+  settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
+  await Promise.all([persistSettings(), writeToken(settingsStore.get().token)]);
+}
+
+/**
+ * Read the token from the keychain, migrating one left in AsyncStorage by an
+ * older build. `migrated` says the keychain now has its own copy, and only
+ * then: a device whose keychain refused the write still needs the old one.
+ */
+async function readToken(legacy: string | undefined): Promise<{ token: string; migrated: boolean }> {
   try {
     const stored = await SecureStore.getItemAsync(TOKEN_KEY);
-    if (stored) return stored;
+    if (stored) return { token: stored, migrated: false };
     if (legacy) {
       await SecureStore.setItemAsync(TOKEN_KEY, legacy);
-      return legacy;
+      return { token: legacy, migrated: true };
     }
   } catch (err) {
     // A device without a usable keychain still gets a working app.
     console.warn("[store] secure storage unavailable", err);
-    return legacy ?? "";
+    return { token: legacy ?? "", migrated: false };
   }
-  return "";
+  return { token: "", migrated: false };
 }
 
 async function writeToken(token: string): Promise<void> {

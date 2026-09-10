@@ -92,6 +92,20 @@ describe("media", () => {
     assert.equal(p.width, 0);
   });
 
+  // The saved name is forced to a video extension, but ffmpeg chooses the
+  // demuxer from the content: a playlist that happens to be called clip.mp4 is
+  // opened by the concat demuxer, which names further local files for the
+  // `file` protocol to read. Only the demuxer whitelist stops that, and the
+  // proof it is doing the work is that the file it points at is a real,
+  // decodable video: without the whitelist this probes as 320x180.
+  it("refuses a playlist that names another local file, whatever it is called", async () => {
+    const playlist = path.join(dir, "playlist-as-clip.mp4");
+    await fs.writeFile(playlist, `ffconcat version 1.0\nfile '${path.basename(clip)}'\n`);
+    const p = await probe(playlist);
+    assert.equal(p.width, 0, "the concat demuxer must not be selected");
+    await assert.rejects(assertDecodable(playlist), /could not be read as video/);
+  });
+
   it("uses a span the caller already probed instead of probing again", async () => {
     // Proven by effect: a 2s span over a 5s clip must sample only the first 2s.
     const frames = await extractFrames(clip, { count: 4, maxSeconds: 60, workDir: dir, spanSeconds: 2 });

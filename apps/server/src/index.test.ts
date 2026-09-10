@@ -7,7 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
-import { addressBucket, app, caller, cleanClipKey, cleanHint, safeExtension } from "./index.js";
+import { addressBucket, app, caller, cleanClipKey, cleanHint, safeExtension, sweepTmpDir } from "./index.js";
 import { createSession, deleteSession, getSession, sessionCount, sessionsHeldBy, sweepSessions } from "./sessions.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
@@ -328,6 +328,65 @@ describe("limits", () => {
       body: form,
     });
     assert.equal(res.status, 200);
+  });
+
+  it("turns uploads away rather than buffering more bodies than it has memory for", async () => {
+    // parseBody materialises the whole upload before the per-session chain or
+    // the limiter is reached, so the ceiling has to be checked before it runs -
+    // and released afterwards, or the server bricks itself after N uploads.
+    const body = () => {
+      const form = new FormData();
+      form.set("nope", "x");
+      return form;
+    };
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const original = config.maxUploadsInFlight;
+    try {
+      (config as { maxUploadsInFlight: number }).maxUploadsInFlight = 0;
+      const busy = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: body() });
+      assert.equal(busy.status, 503);
+      assert.equal(busy.headers.get("retry-after"), "5");
+      assert.match(((await busy.json()) as { error: string }).error, /busy/);
+
+      // With a slot free the same request gets all the way to reading the body,
+      // twice over: the second 400 is the proof the first slot came back.
+      (config as { maxUploadsInFlight: number }).maxUploadsInFlight = 1;
+      for (let i = 0; i < 2; i++) {
+        const res = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: body() });
+        assert.equal(res.status, 400, "the in-flight count must be released when the request ends");
+      }
+    } finally {
+      (config as { maxUploadsInFlight: number }).maxUploadsInFlight = original;
+      await app.request(`/sessions/${sessionId}`, { method: "DELETE" });
+    }
+  });
+
+  it("sweeps staged clips a hard stop left behind, and leaves live work alone", async () => {
+    const original = config.tmpDir;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tvsham-sweep-"));
+    (config as { tmpDir: string }).tmpDir = dir;
+    try {
+      const abandoned = path.join(dir, "session-a-0");
+      const live = path.join(dir, "session-b-0");
+      for (const d of [abandoned, live]) {
+        await fs.mkdir(d, { recursive: true });
+        await fs.writeFile(path.join(d, "clip.mp4"), "not really a clip");
+      }
+      const anHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      await fs.utimes(abandoned, anHourAgo, anHourAgo);
+
+      // The periodic sweep only takes what no request could still be using.
+      assert.equal(await sweepTmpDir(config.sessionTtlMs), 1);
+      assert.deepEqual(await fs.readdir(dir), ["session-b-0"]);
+
+      // Startup has nothing in flight, so it takes the lot.
+      assert.equal(await sweepTmpDir(), 1);
+      assert.deepEqual(await fs.readdir(dir), []);
+    } finally {
+      (config as { tmpDir: string }).tmpDir = original;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects an oversized session body before parsing it", async () => {

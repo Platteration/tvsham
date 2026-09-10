@@ -32,10 +32,14 @@ interface Harness {
   states: IdentifyState[];
   uploaded: string[];
   queued: Array<{ uri: string; reason: string }>;
+  discarded: string[];
   results: RecognitionResult[];
   endedSessions: string[];
   cancel(): void;
 }
+
+/** Let the microtask that cleans up an abandoned recording actually run. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /**
  * `upload` decides what the server answers for each clip; the harness always
@@ -48,6 +52,7 @@ function harness(
   const states: IdentifyState[] = [];
   const uploaded: string[] = [];
   const queued: Array<{ uri: string; reason: string }> = [];
+  const discarded: string[] = [];
   const results: RecognitionResult[] = [];
   const endedSessions: string[] = [];
   let cancelled = false;
@@ -64,6 +69,7 @@ function harness(
       queued.push({ uri, reason });
       return { id: "q1" };
     },
+    discardClip: (uri) => discarded.push(uri),
     isApiError: (err) => err instanceof FakeApiError,
     onResult: (r) => results.push(r),
     onState: (next) => {
@@ -80,6 +86,7 @@ function harness(
     states,
     uploaded,
     queued,
+    discarded,
     results,
     endedSessions,
     cancel: () => {
@@ -156,6 +163,67 @@ describe("identification loop", () => {
     await run(h, p);
     // While clip 1 was uploading, clip 2 had already been asked for.
     assert.equal(recordingsDuringUpload[0], 2, "the next clip must record during the upload");
+  });
+
+  it("throws away the look-ahead recording the server made unnecessary", async () => {
+    // The next clip is already being recorded while the current one uploads, so
+    // "found it" always leaves a file behind. Nothing else refers to it.
+    const h = harness();
+    const p = producer(["a.mp4", "b.mp4"]);
+    await run(h, p);
+    await settle();
+
+    assert.deepEqual(h.uploaded, ["a.mp4"]);
+    assert.deepEqual(h.discarded, ["b.mp4"]);
+  });
+
+  it("throws away the recording nobody will send when the user cancels", async () => {
+    const h = harness({
+      upload: async () => {
+        h.cancel();
+        return result({ wantsMore: true });
+      },
+    });
+    await run(h, producer(["a.mp4", "b.mp4", "c.mp4"]));
+    await settle();
+
+    assert.deepEqual(h.discarded, ["b.mp4"]);
+  });
+
+  it("never throws away a clip that was kept for later", async () => {
+    const h = harness({
+      upload: async () => {
+        throw new Error("Network request failed");
+      },
+    });
+    await run(h, producer(["a.mp4", "b.mp4"]));
+    await settle();
+
+    assert.deepEqual(h.queued.map((q) => q.uri), ["a.mp4"]);
+    assert.equal(h.discarded.includes("a.mp4"), false, "enqueue has already moved that file");
+  });
+
+  it("handles a look-ahead recording that fails after the loop has ended", async () => {
+    // The camera can fail while the previous clip uploads — a phone call, the
+    // app backgrounded. Nothing awaits that promise once the loop is over, so
+    // an uncaught one is reported as an unhandled rejection (and fails this
+    // file), and the run itself must be unaffected.
+    let recordings = 0;
+    const p: ClipProducer = {
+      async record() {
+        recordings++;
+        if (recordings === 1) return "a.mp4";
+        throw new Error("Recording interrupted");
+      },
+      stop() {},
+    };
+    const h = harness({ upload: async () => result({ wantsMore: true }) });
+    await run(h, p, 2);
+    await settle();
+
+    assert.equal(h.states.at(-1)?.phase, "error");
+    assert.match(h.states.at(-1)?.error ?? "", /Recording produced no file/);
+    assert.deepEqual(h.discarded, []);
   });
 
   it("keeps a clip the network never delivered", async () => {

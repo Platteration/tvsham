@@ -42,6 +42,8 @@ export interface IdentifyDeps {
   endSession(sessionId: string): void;
   /** Keep a clip that never reached the server. Returns null if it could not be kept. */
   enqueue(uri: string, source: CaptureSource, reason: string, hints?: string): Promise<unknown | null>;
+  /** Throw away a recording nobody is going to send. Optional: tests need no files. */
+  discardClip?(uri: string): void;
   /** True when the error came from the server rather than the network. */
   isApiError(err: unknown): boolean;
   /** Hand the finished answer to the rest of the app. */
@@ -135,6 +137,21 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
   let recording: Promise<string | null> = producer.record().catch(() => null);
   let sessionId: string | null = null;
 
+  /**
+   * Throw away a recording nobody is going to send. The run can end while one
+   * is still going — the server says it has enough, the user cancels, a request
+   * fails — and its file would otherwise sit in the cache directory with
+   * nothing left holding a reference to it. A clip that was kept for later is
+   * left alone: enqueue has already moved that file somewhere it will survive.
+   */
+  const discardPending = () => {
+    const pending = recording;
+    recording = Promise.resolve(null);
+    void pending.then((uri) => {
+      if (uri && uri !== unsentClipUri) deps.discardClip?.(uri);
+    });
+  };
+
   try {
     sessionId = await overNetwork(() => deps.createSession(source, opts.hints));
     if (deps.isCancelled()) return;
@@ -152,9 +169,11 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
       const upload = overNetwork(() =>
         deps.uploadClip(sessionId!, uri, { clipKey: `${sessionId}:${clip}`, signal: opts.signal }),
       );
-      // Keep listening while the server thinks.
+      // Keep listening while the server thinks. Caught like the first one: the
+      // server may say it has enough while this is still going, and a recording
+      // that then fails would be a rejection with nobody left to handle it.
       const hasNext = clip < maxClips;
-      recording = hasNext ? producer.record() : Promise.resolve(null);
+      recording = hasNext ? producer.record().catch(() => null) : Promise.resolve(null);
 
       latest = await upload;
       // Analysed and paid for: it must never be queued and sent again.
@@ -190,6 +209,7 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
         : { ...prev, phase: "error", error: message },
     );
   } finally {
+    discardPending();
     if (sessionId) deps.endSession(sessionId);
   }
 }

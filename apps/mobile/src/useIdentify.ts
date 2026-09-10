@@ -8,7 +8,7 @@ import {
   type ClipProducer,
   type IdentifyState,
 } from "./identify-run";
-import { enqueue } from "./queue";
+import { discardFile, enqueue } from "./queue";
 import { setLastResult } from "./store";
 
 export type { ClipProducer, IdentifyState, Phase } from "./identify-run";
@@ -52,6 +52,7 @@ export function useIdentify() {
             void endSession(id);
           },
           enqueue,
+          discardClip: discardFile,
           isApiError: (err) => err instanceof ApiError,
           onResult: (result) => setLastResult({ result, source }),
           onState: setState,

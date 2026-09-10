@@ -5,7 +5,9 @@ import type {
   RecognitionResult,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
+import { TimeoutError, withDeadline } from "./deadline";
 import { canSendTokenTo } from "./settings";
+import { cleanRecognitionResult } from "./shapes";
 import { getDeviceId, getSettings } from "./store";
 
 export class ApiError extends Error {
@@ -83,13 +85,23 @@ function region(): string | undefined {
   }
 }
 
+/**
+ * How long each call may take. A server that is there answers the small JSON
+ * ones at once; an upload carries the clip and then waits for the analysis
+ * behind it, which is queued behind every other clip the server is working on.
+ */
+const TIMEOUTS = { control: 15_000, upload: 180_000 };
+
 export async function createSession(source: CaptureSource, hints?: string): Promise<string> {
   const base = baseUrl();
-  const res = await fetch(`${base}/sessions`, {
-    method: "POST",
-    headers: headers(base, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ source, ...(hints ? { hints } : {}), ...(region() ? { region: region() } : {}) }),
-  });
+  const res = await withDeadline(TIMEOUTS.control, "Reaching the server", undefined, (signal) =>
+    fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: headers(base, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ source, ...(hints ? { hints } : {}), ...(region() ? { region: region() } : {}) }),
+      signal,
+    }),
+  );
   return (await parse<CreateSessionResponse>(res)).sessionId;
 }
 
@@ -113,24 +125,30 @@ export async function uploadClip(
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
     form.append("clip", { uri: fileUri, name, type });
     form.append("clipKey", clipKey);
-    const res = await fetch(`${base}/sessions/${sessionId}/clips`, {
-      method: "POST",
-      headers: headers(base, { "X-Clip-Key": clipKey }),
-      body: form,
-      signal: opts.signal ?? null,
-    });
+    const res = await withDeadline(TIMEOUTS.upload, "Sending the clip", opts.signal, (signal) =>
+      fetch(`${base}/sessions/${sessionId}/clips`, {
+        method: "POST",
+        headers: headers(base, { "X-Clip-Key": clipKey }),
+        body: form,
+        signal,
+      }),
+    );
     // 202 means this clip was already accepted and is still being analysed —
     // the body is the session mid-flight, not an answer.
     const stillAnalysing = res.status === 202;
-    return { result: await parse<RecognitionResult>(res), stillAnalysing };
+    // Coerced rather than cast: this is a cleartext hop by default, and what
+    // comes back is rendered and then written to the device library.
+    return { result: cleanRecognitionResult(await parse<unknown>(res), sessionId), stillAnalysing };
   };
 
   let sent: { result: RecognitionResult; stillAnalysing: boolean };
   try {
     sent = await send();
   } catch (err) {
-    // One retry for transient network drops; server-side errors are not retried.
-    if (err instanceof ApiError || opts.signal?.aborted) throw err;
+    // One retry for transient network drops; server-side errors are not
+    // retried, and neither is a deadline: waiting the same three minutes again
+    // is not a transient drop, it is the same silence twice.
+    if (err instanceof ApiError || err instanceof TimeoutError || opts.signal?.aborted) throw err;
     await new Promise((r) => setTimeout(r, 800));
     sent = await send();
   }
@@ -141,11 +159,10 @@ export async function uploadClip(
 /** The session's current state, used to follow up a clip the server is still analysing. */
 export async function fetchSession(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
   const base = baseUrl();
-  const res = await fetch(`${base}/sessions/${sessionId}`, {
-    headers: headers(base),
-    signal: signal ?? null,
-  });
-  return parse<RecognitionResult>(res);
+  const res = await withDeadline(TIMEOUTS.control, "Asking the server for the result", signal, (inner) =>
+    fetch(`${base}/sessions/${sessionId}`, { headers: headers(base), signal: inner }),
+  );
+  return cleanRecognitionResult(await parse<unknown>(res), sessionId);
 }
 
 /** How long to keep asking after a 202, and how often. */
@@ -171,7 +188,9 @@ async function pollUntilSettled(sessionId: string, signal?: AbortSignal): Promis
 export async function endSession(sessionId: string): Promise<void> {
   try {
     const base = baseUrl();
-    await fetch(`${base}/sessions/${sessionId}`, { method: "DELETE", headers: headers(base) });
+    await withDeadline(TIMEOUTS.control, "Closing the session", undefined, (signal) =>
+      fetch(`${base}/sessions/${sessionId}`, { method: "DELETE", headers: headers(base), signal }),
+    );
   } catch {
     /* best effort */
   }
