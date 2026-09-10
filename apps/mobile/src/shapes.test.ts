@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cleanQueuedClips, cleanRecognitionResult, cleanSavedItems } from "./shapes.js";
+import { cleanQueuedClips, cleanRecognitionResult, cleanSavedItems, readSavedItems } from "./shapes.js";
 
 /**
  * The payloads here are what an on-path attacker on a cleartext hop, or a
@@ -131,5 +131,62 @@ describe("untrusted shapes", () => {
     const result = cleanRecognitionResult({ links: many, message: "x".repeat(10_000) });
     assert.equal(result.links.length, 100);
     assert.equal(result.message.length, 2000);
+  });
+});
+
+/**
+ * The records the app wrote itself. They go through the same coercion, because
+ * an older build or one the OS killed mid-write left some of them, but they are
+ * not a response: the ceiling that stops one reply filling the device would,
+ * applied here, delete what the user chose to keep.
+ */
+describe("stored records", () => {
+  function savedItem(i: number) {
+    return {
+      id: `s${i}`,
+      savedAt: `2026-01-0${(i % 9) + 1}T12:00:00.000Z`,
+      source: i % 3 === 0 ? "screen" : "camera",
+      identification: { kind: "movie", title: `Film ${i}`, confidence: 0.9, evidence: "poster" },
+      links: [
+        { provider: "wikipedia", url: `https://en.wikipedia.org/wiki/Film_${i}`, title: `Film ${i}`, confidence: "verified" },
+      ],
+      watched: i % 2 === 0,
+    };
+  }
+
+  it("keeps a saved library larger than the response ceiling through a hydrate and a re-write", () => {
+    // Nothing caps the library: saving is one tap per identification, and
+    // saveResult, saveHistoryItem, removeSaved and setWatched all leave the
+    // length alone, so a heavy user's record is longer than any response. If
+    // the response ceiling reached this list, hydrate would shed the oldest
+    // items and the first save, remove or watch-toggle afterwards would write
+    // the shortened list back over the record, with no way back in the app.
+    const saved = Array.from({ length: 150 }, (_, i) => savedItem(i));
+    const ids = saved.map((i) => i.id);
+
+    // hydrate(): libraryStore.set(readSavedItems(record)).
+    const hydrated = readSavedItems(JSON.stringify(saved));
+    assert.deepEqual(hydrated.map((i) => i.id), ids, "a hydrate must not shed saved items");
+
+    // persistLibrary(): the next change writes whatever the store now holds
+    // back over the record. Read that the way the launch after it would.
+    const relaunched = readSavedItems(JSON.stringify(hydrated));
+    assert.deepEqual(relaunched.map((i) => i.id), ids, "a re-write must not make a truncation permanent");
+    assert.deepEqual(relaunched, hydrated, "every field of every item must survive the round trip");
+    assert.deepEqual(relaunched, saved, "and match what was saved in the first place");
+  });
+
+  it("still caps the links a stored item carries", () => {
+    // Only the list of items lost its ceiling. What is inside an item came from
+    // a response, and the result screen maps over it.
+    const item = { ...savedItem(0), links: Array.from({ length: 500 }, (_, i) => ({ url: `https://example.com/${i}` })) };
+    const [cleaned] = cleanSavedItems([item]);
+    assert.equal(cleaned?.links.length, 100);
+  });
+
+  it("reads a record that is missing, empty or not JSON as an empty list", () => {
+    for (const raw of [null, undefined, "", "{oh no", "null", "\"nope\""]) {
+      assert.deepEqual(readSavedItems(raw), [], `${String(raw)} must not abort the hydrate`);
+    }
   });
 });

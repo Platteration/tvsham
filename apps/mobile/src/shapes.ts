@@ -38,7 +38,7 @@ const SOURCES: readonly CaptureSource[] = ["camera", "screen"];
 
 /** Longest string kept from an untrusted payload; the UI truncates long text anyway. */
 const MAX_TEXT = 2000;
-/** Most items kept from an untrusted list, so one response cannot fill the device. */
+/** Most items kept from an untrusted network list, so one response cannot fill the device. */
 const MAX_ITEMS = 100;
 
 function fields(value: unknown): Record<string, unknown> {
@@ -63,6 +63,21 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback
 
 function items(value: unknown): unknown[] {
   return Array.isArray(value) ? value.slice(0, MAX_ITEMS) : [];
+}
+
+/**
+ * A list the app itself wrote, kept whole. MAX_ITEMS bounds what a server sent;
+ * the saved library is bounded by nothing — saving is one tap per
+ * identification and no code path prunes it — so applying the response ceiling
+ * here would drop the oldest saved items the moment the record is read back,
+ * and the next persistLibrary would write that shorter list over the record for
+ * good. It would not even bound the work, since JSON.parse has already built
+ * the whole array before a slice could shorten it. Stored lists that do have a
+ * ceiling apply it where they are written (HISTORY_LIMIT in store.ts,
+ * MAX_QUEUED in queue.ts), where the user can see the result.
+ */
+function storedItems(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function present<T>(value: T | null): value is T {
@@ -203,9 +218,13 @@ export function cleanRecognitionResult(raw: unknown, fallbackSessionId = ""): Re
   return result;
 }
 
-/** Saved or recently identified items, dropping any that cannot be shown. */
+/**
+ * Saved or recently identified items, dropping any that cannot be shown. This
+ * is the app's own list, so the whole of it is kept: only the links inside an
+ * item, which arrived in a response, carry the untrusted ceiling.
+ */
 export function cleanSavedItems(raw: unknown): SavedItem[] {
-  return items(raw)
+  return storedItems(raw)
     .map((entry): SavedItem | null => {
       const o = fields(entry);
       const id = text(o.id);
@@ -226,9 +245,26 @@ export function cleanSavedItems(raw: unknown): SavedItem[] {
 }
 
 /**
+ * A stored library or history record, read back the way hydrate reads it. The
+ * app wrote this JSON itself, but an older build wrote some of it and a build
+ * the OS killed mid-write wrote the rest, so it is coerced like anything else.
+ */
+export function readSavedItems(raw: string | null | undefined): SavedItem[] {
+  if (!raw) return [];
+  try {
+    return cleanSavedItems(JSON.parse(raw));
+  } catch {
+    // A record that is not JSON at all is an empty list, not a failed hydrate.
+    return [];
+  }
+}
+
+/**
  * Clips waiting for a connection. This list is walked unattended on every
  * foreground event, and its entries are handed straight to createSession and
- * uploadClip, so an entry without a file to send is dropped here.
+ * uploadClip, so an entry without a file to send is dropped here. The queue is
+ * the one stored list with a ceiling of its own (MAX_QUEUED, applied when a
+ * clip is queued), so MAX_ITEMS here is a backstop a real record never reaches.
  */
 export function cleanQueuedClips(raw: unknown): QueuedClip[] {
   return items(raw)

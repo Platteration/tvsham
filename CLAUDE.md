@@ -82,6 +82,12 @@ will pass typecheck and tests but reopen the hole.
 - **What comes back from the server, or off the disk, is coerced rather than cast**
   (`shapes.ts`). The hop is cleartext by default and the payload is then persisted,
   so a `links` that is not an array is a blank screen that survives a restart.
+- **A response has a ceiling; the app's own stored lists do not.** `MAX_ITEMS` keeps one
+  reply from filling the device, so it applies to what arrived over the wire —
+  `storedItems` reads a stored list whole. The saved library is capped nowhere else, so
+  a ceiling on the read drops the oldest saved items and the next `persistLibrary`
+  writes the shorter list over the record for good. A list that should be bounded is
+  bounded where it is written, as history is by `HISTORY_LIMIT`.
 
 ## Things that trip people up
 

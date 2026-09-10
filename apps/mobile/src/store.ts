@@ -5,7 +5,7 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 import { DEFAULT_SETTINGS, cleanServerUrl, sanitise, type Settings } from "./settings";
-import { cleanSavedItems } from "./shapes";
+import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
 
@@ -104,8 +104,11 @@ export function hydrate(): Promise<void> {
       // change a setting: until this record is rewritten the token is still
       // sitting in the plain file the keychain copy exists to get it out of.
       if (migrated) await persistSettings();
-      if (l?.[1]) libraryStore.set(cleanSavedItems(readJson(l[1])));
-      if (h?.[1]) historyStore.set(cleanSavedItems(readJson(h[1])));
+      // Coerced, not cast: an older or half-written record must not reach the
+      // screens. The whole of the library is kept — it is the user's own list
+      // and nothing else caps it, so a ceiling here would delete saved items.
+      if (l?.[1]) libraryStore.set(readSavedItems(l[1]));
+      if (h?.[1]) historyStore.set(readSavedItems(h[1]));
     } catch (err) {
       console.warn("[store] failed to hydrate", err);
     } finally {
