@@ -196,6 +196,59 @@ describe("decode guards", () => {
     }
   });
 
+  it("refuses a file that declares more streams than any recording has", async () => {
+    // The pixel and duration budgets each measure one stream; the count is its
+    // own bomb, because ffmpeg opens a decoder for every stream in the file
+    // while probing it. Every stream here is tiny and they total a fraction of
+    // one frame's budget, so nothing but the stream cap can refuse this.
+    const bin = await ffmpegBinary();
+    const one = path.join(dir, "one-stream.mp4");
+    const many = path.join(dir, "many-streams.mkv");
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc=size=64x64:rate=2", "-t", "1",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-y", one,
+    ]);
+    const copies = 40; // far more than a phone records, far fewer than an attack needs
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error", "-i", one,
+      ...Array.from({ length: copies }, () => ["-map", "0:v"]).flat(),
+      "-c", "copy", "-y", many,
+    ]);
+    await assert.rejects(assertDecodable(many), /could not be read as video/);
+    // The same stream on its own is fine, so this is the count being refused
+    // and not the content.
+    const p = await assertDecodable(one);
+    assert.equal(p.videoStreams, 1);
+  });
+
+  it("counts the pixels of every stream, not just the biggest one", async () => {
+    // Streams that each sit inside the budget still cost the sum of them to
+    // probe, so a stack of within-budget copies is a decode bomb the
+    // largest-stream measurement waves through.
+    const bin = await ffmpegBinary();
+    const clipPath = path.join(dir, "two-video-streams.mp4");
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc=size=320x180:rate=4", "-t", "1",
+      "-map", "0:v", "-map", "0:v",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-y", clipPath,
+    ]);
+    const p = await probe(clipPath);
+    assert.equal(p.videoStreams, 2);
+    assert.equal(p.totalPixels, 2 * 320 * 180);
+
+    const original = config.maxPixels;
+    // Room for one of these streams and no more: the budget is derived from the
+    // clip's own size, so it fails for the sum rather than for the maximum.
+    (config as { maxPixels: number }).maxPixels = 320 * 180;
+    try {
+      await assert.rejects(assertDecodable(clipPath), /2 video streams, more pixels than this server will decode/);
+    } finally {
+      (config as { maxPixels: number }).maxPixels = original;
+    }
+  });
+
   it("refuses a file it could not read at all, rather than falling through", async () => {
     // A probe that finds nothing means an unreadable file or a timed-out ffmpeg.
     // Treating that as "no dimensions, so within budget" would let it through.

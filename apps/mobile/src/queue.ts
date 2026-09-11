@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import { isHopeless } from "./queue-policy";
 import { cleanQueuedClips } from "./shapes";
@@ -180,10 +180,10 @@ async function runFlush(): Promise<FlushOutcome> {
       await remove(item.id);
       continue;
     }
-    let sessionId: string | null = null;
+    let session: SessionHandle | null = null;
     try {
-      sessionId = await createSession(item.source, item.hint);
-      const result = await uploadClip(sessionId, item.uri, { clipKey: item.id });
+      session = await createSession(item.source, item.hint);
+      const result = await uploadClip(session, item.uri, { clipKey: item.id });
       outcome.last = result;
       // The clip was analysed, so it is spent whatever the answer was.
       setLastResult({ result, source: item.source });
@@ -193,7 +193,7 @@ async function runFlush(): Promise<FlushOutcome> {
       outcome.failed++;
       if (err instanceof ApiError && isHopeless(err.status)) await remove(item.id);
     } finally {
-      if (sessionId) void endSession(sessionId);
+      if (session) void endSession(session);
     }
   }
   return outcome;

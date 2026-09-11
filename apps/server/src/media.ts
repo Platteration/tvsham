@@ -53,14 +53,25 @@ async function run(args: string[]): Promise<{ stdout: string; stderr: string }> 
  * "ffconcat version 1.0" is opened by the concat demuxer, which then names
  * other local files for the still-permitted `file` protocol to open, and
  * whatever lands in a frame is described back to the uploader in `evidence`.
- * Both options apply to the input that follows them.
+ * `-max_streams` bounds how many streams one file may declare at all.
+ * All three apply to the input that follows them.
  */
-const INPUT_GUARDS = [
-  "-protocol_whitelist",
-  "file",
-  "-format_whitelist",
-  "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts",
-];
+function inputGuards(): string[] {
+  return [
+    "-protocol_whitelist",
+    "file",
+    "-format_whitelist",
+    "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts",
+    // The budgets below bound one stream; nothing bounds how many a container
+    // may declare, and ffmpeg opens a decoder for every stream in the file
+    // while probing it — sixty copies of a within-budget stream is a 1.6 MB
+    // upload that costs 1.5 GB before any budget can look at it. This is the
+    // only limit that applies *before* that allocation: libavformat refuses
+    // the input outright, which reaches the caller as "could not be read".
+    "-max_streams",
+    String(config.maxStreams),
+  ];
+}
 
 export interface Probe {
   seconds: number;
@@ -73,6 +84,14 @@ export interface Probe {
    * needs its own bound rather than being ignored.
    */
   coverPixels: number;
+  /**
+   * Every picture the file would have ffmpeg decode, added up: each video
+   * stream and each attached picture. A container may carry many, and the
+   * memory a probe costs follows the total rather than the biggest one.
+   */
+  totalPixels: number;
+  /** Video streams the container declares, cover art included. */
+  videoStreams: number;
 }
 
 /**
@@ -86,7 +105,7 @@ export async function probe(file: string): Promise<Probe> {
   const stderr = await new Promise<string>((resolve) => {
     const child = execFile(
       bin,
-      ["-hide_banner", "-nostdin", ...INPUT_GUARDS, "-i", file],
+      ["-hide_banner", "-nostdin", ...inputGuards(), "-i", file],
       { timeout: config.ffmpegTimeoutMs, killSignal: "SIGKILL" },
       (_err, _out, err) => {
         clearTimeout(timer);
@@ -109,9 +128,13 @@ export async function probe(file: string): Promise<Probe> {
   let width = 0;
   let height = 0;
   let coverPixels = 0;
+  let totalPixels = 0;
+  let videoStreams = 0;
   for (const line of stderr.split("\n")) {
     if (!line.includes("Video:")) continue;
+    videoStreams++;
     const m = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(line);
+    totalPixels += m ? Number(m[1]) * Number(m[2]) : Number.POSITIVE_INFINITY;
     // Cover art is counted separately: it is not the stream frames come from,
     // so it must not stand in for the video, but it is still decoded on every
     // probe and so cannot be waved through either. Dimensions we cannot read
@@ -128,7 +151,7 @@ export async function probe(file: string): Promise<Probe> {
       height = h;
     }
   }
-  return { seconds, width, height, coverPixels };
+  return { seconds, width, height, coverPixels, totalPixels, videoStreams };
 }
 
 /** Kept for callers that only want the length. */
@@ -154,6 +177,12 @@ export async function assertDecodable(file: string): Promise<Probe> {
   }
   if (p.coverPixels > config.maxPixels) {
     throw new Error("Clip carries artwork larger than this server will decode.");
+  }
+  // Every stream above is one ffmpeg decodes while probing, so the budget has
+  // to hold for the file as a whole and not only for its largest picture: a
+  // stack of within-budget streams costs the sum of them, not the maximum.
+  if (p.totalPixels > config.maxPixels) {
+    throw new Error(`Clip carries ${p.videoStreams} video streams, more pixels than this server will decode.`);
   }
   if (p.seconds > config.maxDurationSeconds) {
     throw new Error(`Clip is ${Math.round(p.seconds)}s long, longer than this server will decode.`);
@@ -192,7 +221,7 @@ export async function extractFrames(
   const pattern = path.join(opts.workDir, "frame-%03d.jpg");
 
   await run([
-    ...INPUT_GUARDS,
+    ...inputGuards(),
     "-ss",
     offset.toFixed(3),
     "-i",
@@ -235,7 +264,7 @@ export async function extractAudio(
   const out = path.join(opts.workDir, "audio.wav");
   try {
     await run([
-      ...INPUT_GUARDS,
+      ...inputGuards(),
       "-i",
       file,
       "-t",

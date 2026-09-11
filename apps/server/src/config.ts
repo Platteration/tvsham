@@ -16,11 +16,34 @@ function nonNegativeInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
+/** TRUST_PROXY is a count of proxies; `true` is the old spelling of "one". */
+function proxyHops(raw: string | undefined): number {
+  if (raw === "true") return 1;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 /** Read once so the in-flight ceiling below can be derived from it. */
 const maxConcurrent = positiveInt(env("MAX_CONCURRENT"), 3);
 
+/** ...and once more so the per-caller share of it can be. */
+const maxUploadsInFlight = positiveInt(env("MAX_UPLOADS_IN_FLIGHT"), maxConcurrent * 2);
+
+/** ...and again, because node refuses to start if the headers wait is the longer one. */
+const requestTimeoutMs = positiveInt(env("REQUEST_TIMEOUT_MS"), 120_000);
+
 export const config = {
   port: Number(env("PORT", "8787")),
+  /**
+   * Interface to listen on. Loopback by default, which is what the README's
+   * quickstart says the address is: the server is unauthenticated and uncapped
+   * out of the box, and `npm run server` on a laptop otherwise puts it on every
+   * café and hotel network the laptop joins. Set HOST=0.0.0.0 to let a phone
+   * on your LAN reach it — after APP_TOKEN. The Docker image sets it, because
+   * there the published port is the boundary and compose keeps that on
+   * loopback.
+   */
+  host: env("HOST", "127.0.0.1")!,
   appToken: env("APP_TOKEN"),
   model: env("CLAUDE_MODEL", "claude-opus-5")!,
   /**
@@ -68,11 +91,26 @@ export const config = {
   /** Longest input we will accept, whatever the container claims. */
   maxDurationSeconds: positiveInt(env("MAX_DURATION_SECONDS"), 15 * 60),
   /**
-   * Trust X-Forwarded-For for the caller's address. Only turn this on when the
-   * server really is behind a proxy you control: the header is otherwise just a
-   * string the caller chooses, and the daily cap would count nothing.
+   * Streams one upload may declare. ffmpeg opens a decoder for every stream in
+   * the file while probing it, so a container holding sixty copies of a
+   * within-budget video costs sixty decoders' memory — and the pixel budget
+   * above, which measures one stream, never sees it. A phone records a video
+   * and an audio track, plus a timecode and a metadata track or two.
    */
-  trustProxy: env("TRUST_PROXY") === "true",
+  maxStreams: positiveInt(env("MAX_STREAMS"), 8),
+  /**
+   * How many proxies of your own stand in front of this server. Only set it
+   * when they really are yours: X-Forwarded-For is otherwise just a string the
+   * caller chooses, and the daily cap would count nothing.
+   *
+   * A count rather than a flag, because every standard proxy *appends* the
+   * address it saw to whatever the client already sent. The client's own value
+   * is therefore on the left and the address the outermost proxy of yours
+   * observed is this many entries from the right; without knowing how many
+   * that is there is no way to tell one from the other. `TRUST_PROXY=true`
+   * still means one proxy, which is what it always meant to say.
+   */
+  trustedProxyHops: proxyHops(env("TRUST_PROXY")),
   /** Allowed browser origin. Empty (the default) sends no CORS headers at all. */
   corsOrigin: env("CORS_ORIGIN"),
   /** Live sessions to keep before refusing new ones. */
@@ -94,7 +132,25 @@ export const config = {
    * maxConcurrent — and the reason a burst answers 503 instead of exhausting
    * the heap. Raise it only alongside the memory the process actually has.
    */
-  maxUploadsInFlight: positiveInt(env("MAX_UPLOADS_IN_FLIGHT"), maxConcurrent * 2),
+  maxUploadsInFlight,
+  /**
+   * ...of which one caller may hold this many. A body is only released when it
+   * has all arrived, so a client that dribbles one byte every few seconds holds
+   * a slot for as long as it likes for no cost at all; without a share per
+   * caller, a handful of sockets from one address answers every real upload
+   * with a 503. Half the slots, so one address can never take them all.
+   */
+  maxUploadsPerCaller: positiveInt(env("MAX_UPLOADS_PER_CALLER"), Math.max(1, Math.ceil(maxUploadsInFlight / 2))),
+  /**
+   * Longest the server will wait for a whole request to arrive, and for its
+   * headers. Node's own defaults are 5 minutes and 1 minute, which is how long
+   * a stalled upload holds its slot. The clip itself is at most 80 MB, so this
+   * is generous for any connection that is actually delivering one. Node checks
+   * for expiry on its own 30 s interval, so the real cut-off is this plus up to
+   * half a minute.
+   */
+  requestTimeoutMs,
+  headersTimeoutMs: Math.min(positiveInt(env("HEADERS_TIMEOUT_MS"), 15_000), requestTimeoutMs),
   /** Longest a retried clip waits for the original analysis before answering. */
   retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */

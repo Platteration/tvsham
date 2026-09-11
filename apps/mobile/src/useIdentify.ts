@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MAX_CLIPS_PER_SESSION, type CaptureSource } from "@tvsham/shared";
+import { MAX_CLIPS_PER_SESSION, type CaptureSource, type SessionHandle } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import {
   IDLE_STATE,
@@ -22,15 +22,15 @@ export function useIdentify() {
   const [state, setState] = useState<IdentifyState>(IDLE_STATE);
   // One token per run, not one flag for all of them: see createRunGuard.
   const guard = useRef(createRunGuard());
-  const sessionRef = useRef<string | null>(null);
+  const sessionRef = useRef<SessionHandle | null>(null);
   const producerRef = useRef<ClipProducer | null>(null);
 
   const cancel = useCallback(() => {
     guard.current.cancel();
     producerRef.current?.stop?.();
-    const id = sessionRef.current;
+    const session = sessionRef.current;
     sessionRef.current = null;
-    if (id) void endSession(id);
+    if (session) void endSession(session);
     setState(IDLE_STATE);
   }, []);
 
@@ -44,12 +44,12 @@ export function useIdentify() {
         {
           createSession,
           uploadClip,
-          endSession: (id) => {
+          endSession: (session) => {
             // Only forget the session this run owns. A run that finishes late
-            // must not clear the id of the run that replaced it, or a later
-            // cancel has nothing to end server-side.
-            if (sessionRef.current === id) sessionRef.current = null;
-            void endSession(id);
+            // must not clear the session of the run that replaced it, or a
+            // later cancel has nothing to end server-side.
+            if (sessionRef.current?.sessionId === session.sessionId) sessionRef.current = null;
+            void endSession(session);
           },
           enqueue,
           discardClip: discardFile,
@@ -57,8 +57,8 @@ export function useIdentify() {
           onResult: (result) => setLastResult({ result, source }),
           onState: setState,
           isCancelled: run.isCancelled,
-          onSession: (id) => {
-            sessionRef.current = id;
+          onSession: (session) => {
+            sessionRef.current = session;
           },
         },
         {

@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -39,7 +39,18 @@ import { createUsageStore } from "./usage.js";
 /** Frames one session may carry into a single recognition request. */
 const MAX_EVIDENCE_FRAMES = 24;
 
-const app = new Hono();
+/**
+ * What the clip gate decided, handed to the route it admits so the route does
+ * not have to look any of it up a second time.
+ */
+interface ClipAdmission {
+  session: Session;
+  billTo: string;
+  clipKey?: string;
+}
+type AppEnv = { Variables: { clip: ClipAdmission } };
+
+const app = new Hono<AppEnv>();
 const limiter = new Limiter(config.maxConcurrent);
 const usage = createUsageStore(config.dailyClipLimit);
 
@@ -80,6 +91,10 @@ export function addressBucket(address: string): string {
   // An IPv6 zone id ("fe80::1%eth0") is local to the host, not part of identity.
   const bare = (address.split("%")[0] ?? "").trim();
   if (!bare) return "ip:unknown";
+  // Anything that is not an address is not an identity: a header carrying
+  // "aaaa" would otherwise mint the bucket ip:aaaa, and a fresh one per
+  // request. An unidentifiable caller shares the restricted bucket instead.
+  if (!net.isIP(bare)) return "ip:unknown";
   if (net.isIPv4(bare)) return `ip:${bare}`;
   const groups = ipv6Groups(bare);
   if (!groups) return `ip:${bare}`;
@@ -99,9 +114,21 @@ export function addressBucket(address: string): string {
  * X-Forwarded-For is only honoured when the operator says a proxy sets it.
  */
 export function caller(c: Context): string {
-  if (config.trustProxy) {
-    const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-    if (forwarded) return addressBucket(forwarded);
+  const hops = config.trustedProxyHops;
+  if (hops > 0) {
+    const chain = (c.req.header("x-forwarded-for") ?? "")
+      .split(",")
+      .map((hop) => hop.trim())
+      .filter(Boolean);
+    // Counted from the right. Every standard proxy appends the address it saw
+    // to whatever the client already sent, so the leftmost entry is the one
+    // the caller typed — reading that bills a bucket of their choosing, and a
+    // different one on every request. The entry `hops` from the right is the
+    // one the outermost proxy of ours wrote, which they cannot reach. A chain
+    // shorter than that did not come through those proxies at all, so it is
+    // not an identity either and the socket address below is used instead.
+    const written = chain.length >= hops ? chain[chain.length - hops] : undefined;
+    if (written) return addressBucket(written);
   }
   try {
     const remote = getConnInfo(c).remote.address;
@@ -113,23 +140,91 @@ export function caller(c: Context): string {
   // unidentifiable caller should be restricted, never exempt.
   return "ip:unknown";
 }
-app.use("*", logger());
+/**
+ * The session id is a capability: it is the only thing the session routes ask
+ * for, and it is in the path of every request. Hono's logger prints the whole
+ * path, so an hour of stdout — `docker logs`, journald, a pasted crash dump —
+ * is an hour of live sessions to read, destroy or push a clip into.
+ */
+const SESSION_ID_IN_PATH = /\/sessions\/[^/\s?]+/g;
+app.use(
+  "*",
+  logger((message, ...rest) => console.log(message.replace(SESSION_ID_IN_PATH, "/sessions/<id>"), ...rest)),
+);
 // The mobile app is not a browser and needs no CORS. Sending permissive headers
 // by default would let any web page the user visits spend the operator's budget
 // and read back what the household watched, so this is opt-in.
 if (config.corsOrigin) app.use("*", cors({ origin: config.corsOrigin }));
 
-function tokenMatches(header: string, expected: string): boolean {
-  const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
+/**
+ * ...and not sending them is only half of it. A browser will still *deliver* a
+ * cross-origin request that needs no preflight — a form post, or a fetch with
+ * `mode: "no-cors"` — and act on nothing but the reply, which it cannot read.
+ * So any page the user happens to have open can create sessions from their
+ * address until the per-caller ceiling is reached and their own app is
+ * answered 503. Every browser attaches Origin to such a request; the app is
+ * not a browser and attaches none, so refusing the ones we did not allow costs
+ * it nothing.
+ */
+app.use("*", async (c, next) => {
+  const origin = c.req.header("origin");
+  if (origin && origin !== config.corsOrigin) return c.json({ error: "cross-origin request refused" }, 403);
+  return next();
+});
+
+/** A token nobody has to guess: the example file's own value, or too short to matter. */
+export function weakToken(token: string): boolean {
+  return token.trim().length < 24 || /^(change-?me|secret|password|tvsham|token)$/i.test(token.trim());
+}
+
+/** Compare two secrets in constant time, whatever the presented one is. */
+function secretMatches(presented: string, expected: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function tokenMatches(header: string, expected: string): boolean {
+  return secretMatches(header.startsWith("Bearer ") ? header.slice(7) : "", expected);
+}
+
+/**
+ * Wrong bearer tokens, per caller bucket. The token is one shared secret that
+ * gates every paid request, and a 401 costs the guesser nothing: no delay, no
+ * counter and nothing in the log to notice. A handful of wrong answers a
+ * minute is all a person mistyping one needs.
+ */
+const wrongTokens = new Map<string, { until: number; count: number }>();
+const WRONG_TOKEN_WINDOW_MS = 60_000;
+const WRONG_TOKENS_ALLOWED = 10;
+
+/** Attempts left in this bucket's window; 0 is the last one, below 0 is past it. */
+function countWrongToken(bucket: string, now = Date.now()): number {
+  for (const [key, seen] of wrongTokens) if (seen.until <= now) wrongTokens.delete(key);
+  // A flood of distinct callers is a memory question, not a guessing one.
+  if (wrongTokens.size > 10_000) wrongTokens.clear();
+  const seen = wrongTokens.get(bucket);
+  if (!seen) {
+    wrongTokens.set(bucket, { until: now + WRONG_TOKEN_WINDOW_MS, count: 1 });
+    return WRONG_TOKENS_ALLOWED - 1;
+  }
+  seen.count++;
+  return WRONG_TOKENS_ALLOWED - seen.count;
 }
 
 // Optional bearer-token gate for everything except the health check.
 app.use("*", async (c, next) => {
   if (!config.appToken || c.req.path === "/health") return next();
   if (tokenMatches(c.req.header("authorization") ?? "", config.appToken)) return next();
+  const bucket = caller(c);
+  const left = countWrongToken(bucket);
+  // Said out loud, and only once a caller is really guessing: a log full of
+  // 401s nobody reads is the same as no log at all.
+  if (left === 0) console.warn(`[auth] ${bucket} is guessing the bearer token`);
+  if (left <= 0) {
+    c.header("Retry-After", String(Math.ceil(WRONG_TOKEN_WINDOW_MS / 1000)));
+    return c.json({ error: "too many attempts" }, 429);
+  }
   return c.json({ error: "unauthorised" }, 401);
 });
 
@@ -140,6 +235,10 @@ app.use(
   "/sessions",
   bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: "body too large" }, 413) }),
 );
+// Ahead of that limit for clips, on purpose: with no Content-Length to read,
+// bodyLimit drains the whole body into memory to measure it, so every check
+// after it has already paid for the upload whatever it then answers.
+app.on("POST", "/sessions/:id/clips", admitClip);
 app.use(
   "/sessions/:id/clips",
   bodyLimit({
@@ -163,6 +262,12 @@ app.get("/health", async (c) => {
 });
 
 app.post("/sessions", async (c) => {
+  // The other half of the same defence, for the one cross-origin request a
+  // browser may send without an Origin: an HTML form, whose encodings are
+  // text/plain, multipart/form-data and application/x-www-form-urlencoded. A
+  // form cannot ask for application/json, and this route only ever takes that.
+  const type = c.req.header("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (type && type !== "application/json") return c.json({ error: "expected application/json" }, 415);
   const body = (await c.req.json().catch(() => ({}))) as { source?: string; hints?: string; region?: string };
   const source: CaptureSource = body.source === "screen" ? "screen" : "camera";
   const owner = caller(c);
@@ -179,18 +284,39 @@ app.post("/sessions", async (c) => {
     }
   }
   const s = createSession(source, cleanHint(body.hints), cleanRegion(body.region), owner);
-  const res: CreateSessionResponse = { sessionId: s.id };
+  // The only time the key is ever sent anywhere.
+  const res: CreateSessionResponse = { sessionId: s.id, sessionKey: s.key };
   return c.json(res, 201);
 });
 
+/**
+ * Whether this request holds the session's own key.
+ *
+ * The id names a session; it does not authorise one. It is in the path of every
+ * request, so it is in the app's logs, in any proxy's access log, and was in
+ * this server's until the logger above was made to redact it. The key is
+ * returned once, at creation, carried in a header and never printed.
+ *
+ * Binding to the caller's address instead was considered and is wrong for this
+ * app: the client is a phone in the middle of a record-upload-repeat loop, and
+ * walking out of the house, a carrier NAT rotating, or a VPN reconnecting would
+ * answer its own next clip with a 404. A miss is 404 rather than 403, so the
+ * answer does not confirm the id exists.
+ */
+function holdsSessionKey(c: Context, s: Session): boolean {
+  return secretMatches(c.req.header("x-session-key") ?? "", s.key);
+}
+
 app.get("/sessions/:id", (c) => {
   const s = getSession(c.req.param("id"));
-  if (!s) return c.json({ error: "no such session" }, 404);
+  if (!s || !holdsSessionKey(c, s)) return c.json({ error: "no such session" }, 404);
   return c.json(describe(s));
 });
 
 app.delete("/sessions/:id", (c) => {
-  deleteSession(c.req.param("id"));
+  const s = getSession(c.req.param("id"));
+  // Silent either way, so a 204 does not confirm the id belonged to anyone.
+  if (s && holdsSessionKey(c, s)) deleteSession(s.id);
   return c.body(null, 204);
 });
 
@@ -208,12 +334,41 @@ app.delete("/sessions/:id", (c) => {
 let uploadsInFlight = 0;
 
 /**
- * Upload one clip. Multipart form with a `clip` file field (mp4 / mov / webm).
- * The response reflects *all* clips in the session so far.
+ * ...and how many of them each caller is holding. A body is only released when
+ * the whole of it has arrived, and nothing makes a client deliver it promptly,
+ * so one address dribbling a byte at a time into half a dozen sockets would
+ * otherwise answer every real upload with a 503 for free. Bounded per caller
+ * the way sessions are, and cleared as each upload ends so the map cannot grow.
  */
-app.post("/sessions/:id/clips", async (c) => {
+const uploadsByCaller = new Map<string, number>();
+
+function holdUploadSlot(billTo: string): void {
+  uploadsInFlight++;
+  uploadsByCaller.set(billTo, (uploadsByCaller.get(billTo) ?? 0) + 1);
+}
+
+function releaseUploadSlot(billTo: string): void {
+  uploadsInFlight--;
+  const held = (uploadsByCaller.get(billTo) ?? 1) - 1;
+  if (held > 0) uploadsByCaller.set(billTo, held);
+  else uploadsByCaller.delete(billTo);
+}
+
+/**
+ * Everything about an upload that can be decided without its body, decided
+ * before a byte of it is read: whether the session exists, whether it still
+ * wants clips, whether this is a retry of one already analysed, whether the
+ * caller has quota left, and whether there is room to hold another body in
+ * memory. Registered ahead of the body-limit middleware, which is what makes
+ * "before the body is read" true for an upload that arrives without a
+ * Content-Length as well as one that carries it.
+ */
+async function admitClip(c: Context<AppEnv, "/sessions/:id/clips">, next: Next) {
+  // Read now, while the socket is still open: the work below runs after a queue
+  // wait, by which time a disconnected client has no address to bill.
+  const billTo = caller(c);
   const s = getSession(c.req.param("id"));
-  if (!s) return c.json({ error: "no such session" }, 404);
+  if (!s || !holdsSessionKey(c, s)) return c.json({ error: "no such session" }, 404);
   if (s.clips >= MAX_CLIPS_PER_SESSION) {
     return c.json({ ...describe(s), wantsMore: false, message: "Clip limit reached for this session." });
   }
@@ -232,9 +387,6 @@ app.post("/sessions/:id/clips", async (c) => {
     c.header("Retry-After", "5");
     return c.json({ ...describe(s), message: "Still analysing this clip." }, 202);
   }
-  // Read now, while the socket is still open: the work below runs after a queue
-  // wait, by which time a disconnected client has no address to bill.
-  const billTo = caller(c);
   // An over-quota caller should not get to make us buffer the body at all. The
   // quota itself is only spent further down, once the clip is really analysed.
   if (usage.remaining(billTo) <= 0) return overLimit(c, s);
@@ -242,16 +394,29 @@ app.post("/sessions/:id/clips", async (c) => {
   // process has memory for. The limiter below bounds how many clips are
   // *analysed* at a time, which is a different thing: parseBody materialises
   // the whole upload before any of that is reached.
-  if (uploadsInFlight >= config.maxUploadsInFlight) {
+  if (
+    uploadsInFlight >= config.maxUploadsInFlight ||
+    (uploadsByCaller.get(billTo) ?? 0) >= config.maxUploadsPerCaller
+  ) {
     c.header("Retry-After", "5");
     return c.json({ error: "server busy, try again shortly" }, 503);
   }
-  uploadsInFlight++;
+  holdUploadSlot(billTo);
   try {
-    return await receiveClip(c, s, billTo, headerKey);
+    c.set("clip", { session: s, billTo, ...(headerKey ? { clipKey: headerKey } : {}) });
+    return await next();
   } finally {
-    uploadsInFlight--;
+    releaseUploadSlot(billTo);
   }
+}
+
+/**
+ * Upload one clip. Multipart form with a `clip` file field (mp4 / mov / webm).
+ * The response reflects *all* clips in the session so far.
+ */
+app.post("/sessions/:id/clips", async (c) => {
+  const { session, billTo, clipKey } = c.get("clip");
+  return receiveClip(c, session, billTo, clipKey);
 });
 
 /** The rest of the upload: everything from here on holds the clip in memory. */
@@ -526,12 +691,31 @@ async function main(): Promise<void> {
   }
   if (!config.appToken) {
     console.warn("[server] APP_TOKEN is not set: anyone who can reach this port can spend your API budget. Set it for anything beyond a private LAN.");
+  } else if (weakToken(config.appToken)) {
+    // Said as loudly as a missing one. A half-edited .env is otherwise a token
+    // that looks set, is in a public example file, and never gets noticed.
+    console.warn("[server] APP_TOKEN is short or a placeholder: it is the only thing between this port and your API budget. Generate one with: openssl rand -hex 32");
   }
   console.log(`[server] ffmpeg: ${(await ffmpegBinary()) ?? "NOT FOUND"}`);
   console.log(`[server] model: ${config.model}, stt: ${sttProvider().name}`);
-  serve({ fetch: app.fetch, port: config.port }, (info) => {
-    console.log(`[server] listening on http://0.0.0.0:${info.port}`);
-  });
+  serve(
+    {
+      fetch: app.fetch,
+      port: config.port,
+      hostname: config.host,
+      // Node waits five minutes for a request body by default, which is five
+      // minutes an upload slot is held by a client that has stopped sending.
+      serverOptions: {
+        requestTimeout: config.requestTimeoutMs,
+        headersTimeout: config.headersTimeoutMs,
+      },
+    },
+    (info) => {
+      // The address it really bound, not a hard-coded one: the whole point of
+      // the setting is that the two used to disagree.
+      console.log(`[server] listening on http://${config.host}:${info.port}`);
+    },
+  );
 }
 
 export { app };

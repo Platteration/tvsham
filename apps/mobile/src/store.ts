@@ -41,6 +41,16 @@ const DEVICE_KEY = "tvsham.device.v1";
  * include. Everything else is preferences and stays where it is.
  */
 const TOKEN_KEY = "tvsham.token.v1";
+/**
+ * ...and the keychain's own default, WHEN_UNLOCKED, is itself included in an
+ * encrypted backup and restored onto whatever device that backup is put on,
+ * which is the half of the problem the move was meant to solve. The
+ * THIS_DEVICE_ONLY class is the one that stays here. Nothing is lost by it:
+ * the token is typed into Settings again on a new device either way.
+ */
+const TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
@@ -157,7 +167,7 @@ async function readToken(legacy: string | undefined): Promise<{ token: string; m
     const stored = await SecureStore.getItemAsync(TOKEN_KEY);
     if (stored) return { token: stored, migrated: false };
     if (legacy) {
-      await SecureStore.setItemAsync(TOKEN_KEY, legacy);
+      await SecureStore.setItemAsync(TOKEN_KEY, legacy, TOKEN_OPTIONS);
       return { token: legacy, migrated: true };
     }
   } catch (err) {
@@ -170,7 +180,7 @@ async function readToken(legacy: string | undefined): Promise<{ token: string; m
 
 async function writeToken(token: string): Promise<void> {
   try {
-    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
+    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token, TOKEN_OPTIONS);
     else await SecureStore.deleteItemAsync(TOKEN_KEY);
   } catch (err) {
     console.warn("[store] could not save the token securely", err);

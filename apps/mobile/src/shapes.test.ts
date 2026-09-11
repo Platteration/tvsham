@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cleanQueuedClips, cleanRecognitionResult, cleanSavedItems, readSavedItems } from "./shapes.js";
+import {
+  cleanQueuedClips,
+  cleanRecognitionResult,
+  cleanSavedItems,
+  cleanSessionHandle,
+  readSavedItems,
+} from "./shapes.js";
 
 /**
  * The payloads here are what an on-path attacker on a cleartext hop, or a
@@ -83,6 +89,21 @@ describe("untrusted shapes", () => {
     assert.deepEqual(result.identification?.alternatives, [
       { title: "Better Call Saul", kind: "tv_show", year: 2015 },
     ]);
+  });
+
+  it("takes a session only when it comes with the key that authorises it", () => {
+    // The id names the session and the key is what every later call has to
+    // carry; a reply with one and not the other is a session the app would be
+    // answered 404 for four times over before it worked that out.
+    assert.deepEqual(cleanSessionHandle({ sessionId: "s1", sessionKey: "k1" }), {
+      sessionId: "s1",
+      sessionKey: "k1",
+    });
+    assert.equal(cleanSessionHandle({ sessionId: "s1" }), null);
+    assert.equal(cleanSessionHandle({ sessionKey: "k1" }), null);
+    assert.equal(cleanSessionHandle({ sessionId: "s1", sessionKey: 7 }), null);
+    assert.equal(cleanSessionHandle("nope"), null);
+    assert.equal(cleanSessionHandle(null), null);
   });
 
   it("survives a response that is not an object at all", () => {

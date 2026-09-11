@@ -18,8 +18,13 @@ RUN npm run build --workspace apps/server \
  && npm prune --omit=dev --workspace apps/server --include-workspace-root --ignore-scripts
 
 FROM node:22-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production PORT=8787 TMP_DIR=/tmp/tvsham
+# No curl: the health check below is the only thing that wanted it, and node can
+# make one request by itself. A container that decodes attacker-supplied video
+# should not also ship a ready-made way to send the API key somewhere.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# HOST: inside a container every interface is the container's own, and the
+# published port is the boundary - docker-compose.yml keeps that on loopback.
+ENV NODE_ENV=production PORT=8787 HOST=0.0.0.0 TMP_DIR=/tmp/tvsham
 WORKDIR /app
 # Only what the server runs: the compiled output, the shared package it imports,
 # and the pruned production dependencies. typescript, tsx and the rest of the
@@ -33,5 +38,5 @@ RUN mkdir -p /tmp/tvsham && chown node:node /tmp/tvsham
 USER node
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
+  CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "apps/server/dist/index.js"]

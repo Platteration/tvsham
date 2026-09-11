@@ -22,6 +22,7 @@ import type {
   RecognitionResult,
   ResolvedLink,
   SavedItem,
+  SessionHandle,
   SessionStatus,
   VideoPlatform,
   WatchOption,
@@ -192,6 +193,19 @@ export function cleanIdentification(raw: unknown): Identification | undefined {
     .filter(present);
   if (alternatives.length > 0) id.alternatives = alternatives;
   return id;
+}
+
+/**
+ * A newly created session, or null when what came back cannot be used as one.
+ * Both halves have to be there: the id names the session and the key is what
+ * authorises every later call to it, so a response missing either is a session
+ * the app could not talk to.
+ */
+export function cleanSessionHandle(raw: unknown): SessionHandle | null {
+  const o = fields(raw);
+  const sessionId = text(o.sessionId);
+  const sessionKey = text(o.sessionKey);
+  return sessionId && sessionKey ? { sessionId, sessionKey } : null;
 }
 
 /**

@@ -51,6 +51,10 @@ cp apps/server/.env.example apps/server/.env      # add ANTHROPIC_API_KEY
 npm run server                                    # http://localhost:8787
 ```
 
+It listens on loopback, which is what that address says: out of the box there is
+no token and no daily cap, and a laptop joins networks you do not control. To
+let a phone on your LAN reach it, set `APP_TOKEN` first and then `HOST=0.0.0.0`.
+
 Or with Docker (ffmpeg included):
 
 ```bash
@@ -72,10 +76,11 @@ Check it: `curl http://localhost:8787/health` →
 ### Deploying safely
 
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
-- The app keeps the access token in the device keychain (`expo-secure-store`), not in plain app storage, and migrates one saved by an earlier build. Settings and the saved library stay in ordinary storage.
-- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. An IPv6 client is counted against its /64 rather than its exact address, because a normal allocation hands one client a whole /64 to rotate through; IPv4 callers are counted against the full address. Behind a proxy, set `TRUST_PROXY=true` so the real client address is used. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
+- The app keeps the access token in the device keychain (`expo-secure-store`), not in plain app storage, and migrates one saved by an earlier build. It is stored for this device only (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`), so it does not travel in a backup to a new phone — type it in again there. Settings and the saved library stay in ordinary storage.
+- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. An IPv6 client is counted against its /64 rather than its exact address, because a normal allocation hands one client a whole /64 to rotate through; IPv4 callers are counted against the full address. Behind a proxy of your own, set `TRUST_PROXY` to the number of proxies you run (`true` still means one) so the real client address is used: the header is read from the proxy end, because every proxy appends the address it saw to whatever the client already sent, and the leftmost entry is therefore the caller's own typing. Set it even when the proxy is on the same host — a container published on `127.0.0.1` sees the Docker bridge gateway for every client, so without it the whole world shares one bucket and one caller exhausts the cap for everybody. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
+- A session is authorised by the `sessionKey` it was created with, not by the address it is called from: the id names the session and travels in every URL, so it is a poor credential, while a phone changes network in the middle of a capture and must not lose its own session for it. The server's request log prints `/sessions/<id>` rather than the id.
 - Sessions are bounded per caller as well as globally (`MAX_SESSIONS_PER_CALLER`), and no session outlives `SESSION_MAX_AGE_MS` however often it is read. Reading a session refreshes its idle timer, so without an absolute lifetime one caller could hold every session slot with a cheap poll and turn the server into a 503 for everyone else.
-- Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS.
+- Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS. A public `http:` address is warned about in Settings but not blocked, and Android permits the connection (its cleartext setting is all-or-nothing, and what a LAN server needs is a private IP literal, which Android's per-domain rules cannot express) while iOS refuses it — so on Android that configuration sends your clips and results in the clear. Use `https://` for anything off your own network.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
 - Decoding is bounded: every ffmpeg run has a hard timeout, oversized or overlong inputs are refused before a frame is decoded, and the input is restricted to local files. A small file can otherwise declare enormous dimensions and cost gigabytes to decode.
 - No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
@@ -88,15 +93,20 @@ Check it: `curl http://localhost:8787/health` →
 | `ANTHROPIC_API_KEY` | – | **Required.** |
 | `CLAUDE_MODEL` | `claude-opus-5` | Recognition model. |
 | `PORT` | `8787` | Listen port. |
+| `HOST` | `127.0.0.1` | Interface to listen on. `0.0.0.0` to let other devices reach it — set `APP_TOKEN` first. The Docker image sets it, because there the published port is the boundary. |
 | `APP_TOKEN` | – | If set, the app must send it as a bearer token (enter it in Settings). |
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
 | `DAILY_CLIP_LIMIT` | `0` (off) | Clips one caller may have analysed per day, counted against the connecting address. In-memory, so it resets on restart. |
-| `TRUST_PROXY` | `false` | Count the cap against `X-Forwarded-For`. Only enable behind a proxy you control. |
+| `TRUST_PROXY` | `0` (off) | How many proxies of your own stand in front of the server; `true` means one. The caller's address is then the `X-Forwarded-For` hop that many from the right, which the client cannot forge. Only set it behind proxies you control. |
 | `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. |
 | `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
-| `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
+| `MAX_PIXELS` | `9437184` | Largest frame the server will decode, and the most a clip's streams may total. |
+| `MAX_STREAMS` | `8` | Streams one upload may declare. ffmpeg opens a decoder per stream while probing, so the count needs a bound of its own. |
 | `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
 | `MAX_UPLOADS_IN_FLIGHT` | `2 × MAX_CONCURRENT` | Uploads that may be in memory at once, counted before the body is read. Further ones get a 503 with `Retry-After`. |
+| `MAX_UPLOADS_PER_CALLER` | `½ × MAX_UPLOADS_IN_FLIGHT` | How many of those slots one address may hold. A body is only released when all of it has arrived, so a few stalled sockets would otherwise 503 everyone else. |
+| `REQUEST_TIMEOUT_MS` | `120000` | How long the server waits for a whole request body before dropping it (Node's own default is 5 minutes). |
+| `HEADERS_TIMEOUT_MS` | `15000` | The same for the headers. |
 | `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
 | `MAX_SESSIONS_PER_CALLER` | `20` | Live sessions one connecting address may hold at once. |
 | `SESSION_MAX_AGE_MS` | `3600000` | Absolute session lifetime, whatever the idle timer says. |
@@ -116,10 +126,17 @@ Check it: `curl http://localhost:8787/health` →
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | `GET` | `/health` | – | `HealthResponse` |
-| `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId }` |
+| `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId, sessionKey }` |
 | `POST` | `/sessions/:id/clips` | multipart, field `clip` (mp4/mov/webm) | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
+
+Every call about an existing session carries `X-Session-Key: <sessionKey>`, the secret
+returned when it was created; without it the answer is `404`, the same as for an id that
+never existed. The id only names a session — it is in the path, so it is in every access
+log on the way — while the key is sent in a header and never logged. Update the server
+and the app together: a build of the app from before this existed cannot talk to a server
+with it.
 
 A clip upload answers `202` when that clip is already being analysed (a retry arriving while the original is in flight); the app then polls `GET /sessions/:id` until `analysing` turns false, instead of mistaking the mid-flight state for an answer.
 

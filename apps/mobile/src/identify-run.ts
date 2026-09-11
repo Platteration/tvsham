@@ -6,7 +6,7 @@
  * so it lives apart from React and is tested directly. `useIdentify` supplies
  * the real dependencies and turns the reported states into React state.
  */
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 
 export type Phase = "idle" | "recording" | "uploading" | "done" | "error" | "queued";
 
@@ -33,13 +33,14 @@ export interface ClipProducer {
 }
 
 export interface IdentifyDeps {
-  createSession(source: CaptureSource, hints?: string): Promise<string>;
+  /** The id names the session; the key that comes with it authorises the rest. */
+  createSession(source: CaptureSource, hints?: string): Promise<SessionHandle>;
   uploadClip(
-    sessionId: string,
+    session: SessionHandle,
     uri: string,
     opts: { clipKey: string; signal?: AbortSignal },
   ): Promise<RecognitionResult>;
-  endSession(sessionId: string): void;
+  endSession(session: SessionHandle): void;
   /** Keep a clip that never reached the server. Returns null if it could not be kept. */
   enqueue(uri: string, source: CaptureSource, reason: string, hints?: string): Promise<unknown | null>;
   /** Throw away a recording nobody is going to send. Optional: tests need no files. */
@@ -52,8 +53,8 @@ export interface IdentifyDeps {
   onState(next: IdentifyState | ((prev: IdentifyState) => IdentifyState)): void;
   /** Whether the user has cancelled since this run began. */
   isCancelled(): boolean;
-  /** Called once the session id exists, so a cancel can end it server-side. */
-  onSession(sessionId: string): void;
+  /** Called once the session exists, so a cancel can end it server-side. */
+  onSession(session: SessionHandle): void;
 }
 
 export interface IdentifyOptions {
@@ -135,7 +136,7 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
 
   // Start recording immediately; the session is created while the first clip records.
   let recording: Promise<string | null> = producer.record().catch(() => null);
-  let sessionId: string | null = null;
+  let session: SessionHandle | null = null;
 
   /**
    * Throw away a recording nobody is going to send. The run can end while one
@@ -153,9 +154,9 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
   };
 
   try {
-    sessionId = await overNetwork(() => deps.createSession(source, opts.hints));
+    session = await overNetwork(() => deps.createSession(source, opts.hints));
     if (deps.isCancelled()) return;
-    deps.onSession(sessionId);
+    deps.onSession(session);
 
     let latest: RecognitionResult | null = null;
     let clipsDone = 0;
@@ -167,7 +168,7 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
 
       deps.onState({ phase: "uploading", clip, result: latest, error: null });
       const upload = overNetwork(() =>
-        deps.uploadClip(sessionId!, uri, { clipKey: `${sessionId}:${clip}`, signal: opts.signal }),
+        deps.uploadClip(session!, uri, { clipKey: `${session!.sessionId}:${clip}`, signal: opts.signal }),
       );
       // Keep listening while the server thinks. Caught like the first one: the
       // server may say it has enough while this is still going, and a recording
@@ -210,6 +211,6 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
     );
   } finally {
     discardPending();
-    if (sessionId) deps.endSession(sessionId);
+    if (session) deps.endSession(session);
   }
 }

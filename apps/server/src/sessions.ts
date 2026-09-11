@@ -1,10 +1,16 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { CaptureSource, CastMember, Identification, ResolvedLink, WatchOption } from "@tvsham/shared";
 import { config } from "./config.js";
 import type { Evidence } from "./recognize.js";
 
 export interface Session {
   id: string;
+  /**
+   * The secret returned to whoever created it, and the only thing that
+   * authorises a later call. The id is in the path of every request and so in
+   * every access log on the way; this is in a header and is never printed.
+   */
+  key: string;
   createdAt: number;
   touchedAt: number;
   evidence: Evidence;
@@ -37,6 +43,8 @@ export function createSession(
 ): Session {
   const s: Session = {
     id: randomUUID(),
+    // 256 bits from the CSPRNG: this is a bearer credential, not an id.
+    key: randomBytes(32).toString("base64url"),
     createdAt: Date.now(),
     touchedAt: Date.now(),
     evidence: { source, frames: [], transcripts: [], ...(hints ? { hints } : {}) },

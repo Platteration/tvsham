@@ -22,4 +22,13 @@ services:
     # host's OOM killer, which picks its victim by size and may not pick this.
     # Raise both together, never one alone.
     mem_limit: 2g
+    # This container decodes video chosen by whoever uploaded it, through the
+    # demuxers and decoders of ffmpeg. That is the one place a third-party
+    # memory-safety bug would land, so the process is given nothing it does not
+    # need: no Linux capabilities (it binds 8787 as an unprivileged user), and
+    # no way to gain any through a setuid binary in the base image.
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped

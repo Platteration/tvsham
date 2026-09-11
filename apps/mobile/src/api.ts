@@ -1,13 +1,13 @@
 import type {
   CaptureSource,
-  CreateSessionResponse,
   HealthResponse,
   RecognitionResult,
+  SessionHandle,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
 import { TimeoutError, withDeadline } from "./deadline";
 import { canSendTokenTo } from "./settings";
-import { cleanRecognitionResult } from "./shapes";
+import { cleanRecognitionResult, cleanSessionHandle } from "./shapes";
 import { getDeviceId, getSettings } from "./store";
 
 export class ApiError extends Error {
@@ -92,7 +92,7 @@ function region(): string | undefined {
  */
 const TIMEOUTS = { control: 15_000, upload: 180_000 };
 
-export async function createSession(source: CaptureSource, hints?: string): Promise<string> {
+export async function createSession(source: CaptureSource, hints?: string): Promise<SessionHandle> {
   const base = baseUrl();
   const res = await withDeadline(TIMEOUTS.control, "Reaching the server", undefined, (signal) =>
     fetch(`${base}/sessions`, {
@@ -102,7 +102,25 @@ export async function createSession(source: CaptureSource, hints?: string): Prom
       signal,
     }),
   );
-  return (await parse<CreateSessionResponse>(res)).sessionId;
+  // Coerced like everything else off the wire: without a usable key every later
+  // call to this session is a 404, and saying so here beats four of them.
+  const handle = cleanSessionHandle(await parse<unknown>(res));
+  if (!handle) throw new ApiError("The server did not return a usable session.");
+  return handle;
+}
+
+/**
+ * Headers for a call about a session that already exists. The key is what
+ * authorises it; unlike the access token it is not withheld over plain HTTP,
+ * because it grants only this one session — anyone close enough to read the
+ * header is already reading the clip it belongs to.
+ */
+function sessionHeaders(
+  base: string,
+  session: SessionHandle,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return headers(base, { "X-Session-Key": session.sessionKey, ...extra });
 }
 
 /**
@@ -110,7 +128,7 @@ export async function createSession(source: CaptureSource, hints?: string): Prom
  * objects in FormData and streams the file from disk.
  */
 export async function uploadClip(
-  sessionId: string,
+  session: SessionHandle,
   fileUri: string,
   opts: { mimeType?: string; signal?: AbortSignal; clipKey?: string } = {},
 ): Promise<RecognitionResult> {
@@ -126,9 +144,9 @@ export async function uploadClip(
     form.append("clip", { uri: fileUri, name, type });
     form.append("clipKey", clipKey);
     const res = await withDeadline(TIMEOUTS.upload, "Sending the clip", opts.signal, (signal) =>
-      fetch(`${base}/sessions/${sessionId}/clips`, {
+      fetch(`${base}/sessions/${session.sessionId}/clips`, {
         method: "POST",
-        headers: headers(base, { "X-Clip-Key": clipKey }),
+        headers: sessionHeaders(base, session, { "X-Clip-Key": clipKey }),
         body: form,
         signal,
       }),
@@ -138,7 +156,7 @@ export async function uploadClip(
     const stillAnalysing = res.status === 202;
     // Coerced rather than cast: this is a cleartext hop by default, and what
     // comes back is rendered and then written to the device library.
-    return { result: cleanRecognitionResult(await parse<unknown>(res), sessionId), stillAnalysing };
+    return { result: cleanRecognitionResult(await parse<unknown>(res), session.sessionId), stillAnalysing };
   };
 
   let sent: { result: RecognitionResult; stillAnalysing: boolean };
@@ -153,16 +171,16 @@ export async function uploadClip(
     sent = await send();
   }
   // Outside the retry above on purpose: a failed poll must not re-upload the clip.
-  return sent.stillAnalysing ? pollUntilSettled(sessionId, opts.signal) : sent.result;
+  return sent.stillAnalysing ? pollUntilSettled(session, opts.signal) : sent.result;
 }
 
 /** The session's current state, used to follow up a clip the server is still analysing. */
-export async function fetchSession(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
+export async function fetchSession(session: SessionHandle, signal?: AbortSignal): Promise<RecognitionResult> {
   const base = baseUrl();
   const res = await withDeadline(TIMEOUTS.control, "Asking the server for the result", signal, (inner) =>
-    fetch(`${base}/sessions/${sessionId}`, { headers: headers(base), signal: inner }),
+    fetch(`${base}/sessions/${session.sessionId}`, { headers: sessionHeaders(base, session), signal: inner }),
   );
-  return cleanRecognitionResult(await parse<unknown>(res), sessionId);
+  return cleanRecognitionResult(await parse<unknown>(res), session.sessionId);
 }
 
 /** How long to keep asking after a 202, and how often. */
@@ -175,21 +193,25 @@ const POLL_INTERVAL_MS = 3000;
  * session-wide, so a previous clip's answer would end the wait immediately and
  * be returned as this clip's result.
  */
-async function pollUntilSettled(sessionId: string, signal?: AbortSignal): Promise<RecognitionResult> {
-  let latest = await fetchSession(sessionId, signal);
+async function pollUntilSettled(session: SessionHandle, signal?: AbortSignal): Promise<RecognitionResult> {
+  let latest = await fetchSession(session, signal);
   for (let i = 0; i < POLL_ATTEMPTS && latest.analysing; i++) {
     if (signal?.aborted) throw new ApiError("Cancelled while waiting for the server.");
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    latest = await fetchSession(sessionId, signal);
+    latest = await fetchSession(session, signal);
   }
   return latest;
 }
 
-export async function endSession(sessionId: string): Promise<void> {
+export async function endSession(session: SessionHandle): Promise<void> {
   try {
     const base = baseUrl();
     await withDeadline(TIMEOUTS.control, "Closing the session", undefined, (signal) =>
-      fetch(`${base}/sessions/${sessionId}`, { method: "DELETE", headers: headers(base), signal }),
+      fetch(`${base}/sessions/${session.sessionId}`, {
+        method: "DELETE",
+        headers: sessionHeaders(base, session),
+        signal,
+      }),
     );
   } catch {
     /* best effort */

@@ -115,7 +115,17 @@ export const MAX_HINT_LENGTH = 120;
 
 export interface CreateSessionResponse {
   sessionId: string;
+  /**
+   * The secret that authorises later calls to this session. Returned once, at
+   * creation, and sent back in the `X-Session-Key` header: the id only *names*
+   * a session, and it travels in every URL and so through every access log on
+   * the way, which is not where a credential belongs.
+   */
+  sessionKey: string;
 }
+
+/** A session and the secret that authorises it, which is what later calls need. */
+export type SessionHandle = CreateSessionResponse;
 
 export interface HealthResponse {
   ok: true;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 import {
   createRunGuard,
   runIdentification,
@@ -31,6 +31,8 @@ interface Harness {
   deps: IdentifyDeps;
   states: IdentifyState[];
   uploaded: string[];
+  /** The session handle each upload was given, key and all. */
+  uploadedWith: SessionHandle[];
   queued: Array<{ uri: string; reason: string }>;
   discarded: string[];
   results: RecognitionResult[];
@@ -51,6 +53,7 @@ function harness(
   const { upload, ...overrides } = opts;
   const states: IdentifyState[] = [];
   const uploaded: string[] = [];
+  const uploadedWith: SessionHandle[] = [];
   const queued: Array<{ uri: string; reason: string }> = [];
   const discarded: string[] = [];
   const results: RecognitionResult[] = [];
@@ -59,12 +62,13 @@ function harness(
   let last: IdentifyState = { phase: "idle", clip: 0, result: null, error: null };
 
   const deps: IdentifyDeps = {
-    createSession: async () => "s1",
-    uploadClip: async (_id, uri) => {
+    createSession: async () => ({ sessionId: "s1", sessionKey: "k1" }),
+    uploadClip: async (session, uri) => {
       uploaded.push(uri);
+      uploadedWith.push(session);
       return upload ? upload(uri, uploaded.length) : result();
     },
-    endSession: (id) => endedSessions.push(id),
+    endSession: (session) => endedSessions.push(session.sessionId),
     enqueue: async (uri, _source, reason) => {
       queued.push({ uri, reason });
       return { id: "q1" };
@@ -88,6 +92,7 @@ function harness(
     queued,
     discarded,
     results,
+    uploadedWith,
     endedSessions,
     cancel: () => {
       cancelled = true;
@@ -314,13 +319,26 @@ describe("identification loop", () => {
     assert.deepEqual(h.endedSessions, ["s1"]);
   });
 
+  it("carries the session's key into every call about it, not just its id", async () => {
+    // The id names the session; the key is what authorises reading it,
+    // uploading to it and ending it. Dropping the key anywhere along the loop
+    // is four 404s in a row from the server's point of view.
+    const h = harness({ upload: async (_uri, n) => result({ wantsMore: n < 2 }) });
+    await run(h, producer(["a.mp4", "b.mp4"]), 2);
+
+    assert.equal(h.uploadedWith.length, 2);
+    for (const session of h.uploadedWith) {
+      assert.deepEqual(session, { sessionId: "s1", sessionKey: "k1" });
+    }
+  });
+
   it("hands the run's abort signal to the upload", async () => {
     // Nothing else can close an upload that is already open, so a cancel with
     // no signal leaves the clip being analysed and paid for after the user
     // has stopped.
     const signals: Array<AbortSignal | undefined> = [];
     const h = harness({
-      uploadClip: async (_id, _uri, opts) => {
+      uploadClip: async (_session, _uri, opts) => {
         signals.push(opts.signal);
         return result();
       },
