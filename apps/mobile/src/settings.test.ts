@@ -31,6 +31,21 @@ describe("settings validation", () => {
     assert.equal(sanitise(stored({ appearance: "dark" })).appearance, "dark");
   });
 
+  it("does not take a name off Object.prototype as an accent", () => {
+    // The comment on sanitise() says anything that drives a colour lookup is
+    // checked before it is trusted, and a stored record is an object somebody
+    // else's version of the app wrote. "constructor" and its siblings used to
+    // pass that check and reach the lookup table as a colour that is not one.
+    for (const inherited of Object.getOwnPropertyNames(Object.prototype)) {
+      assert.equal(sanitise(stored({ accent: inherited })).accent, "midnight", inherited);
+      assert.deepEqual(
+        sanitise(stored({ unlockedAccents: [inherited, "forest"] })).unlockedAccents,
+        ["forest"],
+        inherited,
+      );
+    }
+  });
+
   it("keeps only accent packs it recognises, and never leaves the user with none", () => {
     assert.deepEqual(sanitise(stored({ unlockedAccents: ["forest", "chartreuse"] })).unlockedAccents, ["forest"]);
     assert.deepEqual(sanitise(stored({ unlockedAccents: [] })).unlockedAccents, DEFAULT_SETTINGS.unlockedAccents);

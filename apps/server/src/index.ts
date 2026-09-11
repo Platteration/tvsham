@@ -81,6 +81,31 @@ function ipv6Groups(raw: string): string[] | null {
 }
 
 /**
+ * The address inside a forwarded hop, with whatever the proxy wrapped around it
+ * taken off.
+ *
+ * Several real proxies write a port: Azure's App Service and Application
+ * Gateway append `203.0.113.9:54321`, and an IPv6 hop with a port has to be
+ * bracketed (`[2001:db8::1]:443`). `net.isIP` takes neither, so treating them
+ * as garbage puts every client behind such a proxy into the one shared
+ * `ip:unknown` bucket — which is the "one caller exhausts the cap for
+ * everybody" failure the README warns about, in the configuration the README
+ * recommends. A bare IPv6 address is all colons and must survive untouched, so
+ * the port is only taken off a hop that has exactly one colon in it.
+ */
+function bareAddress(raw: string): string {
+  const hop = raw.trim();
+  const bracketed = /^\[([^\]]+)\](?::\d{1,5})?$/.exec(hop);
+  if (bracketed) return bracketed[1]!;
+  const withPort = /^([^:]+):\d{1,5}$/.exec(hop);
+  if (withPort) return withPort[1]!;
+  return hop;
+}
+
+/** Said once per process: a trusted hop nobody can read is a configuration fault. */
+let warnedUnreadableHop = false;
+
+/**
  * The bucket an address is counted against. An address cannot be forged, but on
  * IPv6 it is not scarce either: an ordinary client is handed a whole /64 and can
  * source every request from a different address in it, which would give each
@@ -89,7 +114,7 @@ function ipv6Groups(raw: string): string[] | null {
  */
 export function addressBucket(address: string): string {
   // An IPv6 zone id ("fe80::1%eth0") is local to the host, not part of identity.
-  const bare = (address.split("%")[0] ?? "").trim();
+  const bare = (bareAddress(address).split("%")[0] ?? "").trim();
   if (!bare) return "ip:unknown";
   // Anything that is not an address is not an identity: a header carrying
   // "aaaa" would otherwise mint the bucket ip:aaaa, and a fresh one per
@@ -128,7 +153,20 @@ export function caller(c: Context): string {
     // shorter than that did not come through those proxies at all, so it is
     // not an identity either and the socket address below is used instead.
     const written = chain.length >= hops ? chain[chain.length - hops] : undefined;
-    if (written) return addressBucket(written);
+    if (written) {
+      const bucket = addressBucket(written);
+      // Failing closed here is right — a hop nobody can parse is not an
+      // identity — but it is also every caller in one bucket, and the operator
+      // has no way to tell that from their own cap being hit. So say it, once.
+      if (bucket === "ip:unknown" && !warnedUnreadableHop) {
+        warnedUnreadableHop = true;
+        console.warn(
+          `[server] TRUST_PROXY is set but the forwarded hop is not an address ("${written.replace(/[^\x20-\x7e]/g, "?").slice(0, 60)}"): ` +
+            "every caller is being counted in one shared bucket. Check how many proxies you really run.",
+        );
+      }
+      return bucket;
+    }
   }
   try {
     const remote = getConnInfo(c).remote.address;
@@ -172,9 +210,34 @@ app.use("*", async (c, next) => {
   return next();
 });
 
+/**
+ * What is wrong with `CORS_ORIGIN`, in words, or null.
+ *
+ * `*` is the usual spelling of "any origin" and Hono's own default, so it is
+ * the value an operator reaches for — and with the Origin gate above it is
+ * self-contradictory: the preflight is answered 204 with
+ * `Access-Control-Allow-Origin: *` and the request that follows is refused 403,
+ * because no real Origin header is ever the literal `*`. Making the gate honour
+ * it would mean letting every page on the internet spend the operator's budget,
+ * which is the one thing this setting exists to prevent, so the server says so
+ * and stops instead of running in a shape nobody asked for.
+ */
+export function corsConfigProblem(origin = config.corsOrigin): string | null {
+  if (origin?.trim() !== "*") return null;
+  return (
+    "CORS_ORIGIN=* would let any web page a user visits spend your Claude budget and read back what they watched. " +
+    "Name the one origin you serve from (CORS_ORIGIN=https://dashboard.example), or leave it unset — the app needs no CORS."
+  );
+}
+
 /** A token nobody has to guess: the example file's own value, or too short to matter. */
 export function weakToken(token: string): boolean {
-  return token.trim().length < 24 || /^(change-?me|secret|password|tvsham|token)$/i.test(token.trim());
+  const t = token.trim();
+  // A substring, not the whole string: every placeholder spelled out end to end
+  // is shorter than the length rule beside it, so a whole-string match here
+  // never decided anything. What is actually found in a half-edited .env is a
+  // placeholder padded out to look like a secret, and only this catches those.
+  return t.length < 24 || /change-?me|placeholder|example|secret|password|tvsham|token/i.test(t);
 }
 
 /** Compare two secrets in constant time, whatever the presented one is. */
@@ -673,6 +736,13 @@ export async function sweepTmpDir(olderThanMs = 0, now = Date.now()): Promise<nu
 }
 
 async function main(): Promise<void> {
+  const corsProblem = corsConfigProblem();
+  if (corsProblem) {
+    // Refused rather than warned about: the alternative is a server that
+    // answers every preflight yes and every request no.
+    console.error(`[server] ${corsProblem}`);
+    process.exit(1);
+  }
   const sttProblem = sttWarning();
   if (sttProblem) {
     // Fail loudly rather than transcribing to somewhere the operator did not choose.

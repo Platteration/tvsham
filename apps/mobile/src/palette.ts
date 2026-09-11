@@ -39,7 +39,12 @@ export type Appearance = "system" | "light" | "dark";
 export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
 
 export function isAccentName(v: string): v is AccentName {
-  return v in ACCENTS;
+  // An own property, not `in`: ACCENTS is a plain object, so `in` is true for
+  // every name on Object.prototype — "constructor", "__proto__", "toString" —
+  // and a stored accent of "toString" passes the check, indexes ACCENTS to
+  // undefined and runs the whole app with no accent colour at all, which is
+  // the WCAG pairing this module's tests pin quietly gone.
+  return Object.prototype.hasOwnProperty.call(ACCENTS, v);
 }
 
 const BRAND = {

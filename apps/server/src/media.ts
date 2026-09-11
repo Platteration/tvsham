@@ -62,16 +62,65 @@ function inputGuards(): string[] {
     "file",
     "-format_whitelist",
     "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts",
-    // The budgets below bound one stream; nothing bounds how many a container
+    // The pixel budgets bound one stream; nothing bounds how many a container
     // may declare, and ffmpeg opens a decoder for every stream in the file
     // while probing it — sixty copies of a within-budget stream is a 1.6 MB
-    // upload that costs 1.5 GB before any budget can look at it. This is the
-    // only limit that applies *before* that allocation: libavformat refuses
-    // the input outright, which reaches the caller as "could not be read".
+    // upload that costs 1.5 GB before any budget can look at it. This applies
+    // *before* that allocation, which is what the budgets cannot do: libavformat
+    // refuses the input outright, and that reaches the caller as "could not be
+    // read". How much each of the streams it does allow may then cost is
+    // `probeBudget()`, below.
     "-max_streams",
     String(config.maxStreams),
   ];
 }
+
+/**
+ * The probe's own bound, on top of the guards above.
+ *
+ * `-max_streams` caps how many decoders ffmpeg may open; nothing caps what each
+ * one then allocates, and `assertDecodable`'s pixel budgets cannot, because
+ * they are read *out of* this run's banner — by the time they refuse a file the
+ * memory has already been taken. The cost is in `find_stream_info`, which
+ * decodes frames from every stream to fill in what the container did not
+ * declare: eight streams declaring 8192x4608 are a 1.4 MB upload that costs
+ * 736 MB to refuse, and three of those at once is past the 2 GB the shipped
+ * compose file allows the container. Reading a fixed short prefix and giving up
+ * on the analysis costs 113 MB for that file, and 39 MB for a real 4096x2304
+ * clip, which is what it cost before: everything read below — dimensions,
+ * stream count, duration — comes out of the container's own header either way.
+ */
+function probeBudget(): string[] {
+  return ["-probesize", String(config.probeBytes), "-analyzeduration", "0"];
+}
+
+/**
+ * The probe as a command, under an address-space limit when one is configured.
+ *
+ * `exec` on purpose: the shell replaces itself with ffmpeg, so the pid stays
+ * the process we time out and kill, and there is no orphan left behind when it
+ * is. A shell that cannot set the limit runs ffmpeg anyway — this is the second
+ * line, not the bound.
+ */
+function probeCommand(bin: string, args: string[]): { file: string; args: string[] } {
+  if (config.probeMemoryMb <= 0 || process.platform === "win32") return { file: bin, args };
+  return {
+    file: "/bin/sh",
+    // Arguments, never interpolation: the file name in `args` comes from the
+    // upload, and a shell that could see it is a shell that could run it.
+    args: [
+      "-c",
+      'ulimit -v "$1" 2>/dev/null; shift; exec "$@"',
+      "sh",
+      String(config.probeMemoryMb * 1024),
+      bin,
+      ...args,
+    ],
+  };
+}
+
+/** Said once per process: a probe that produces nothing is not a clip problem. */
+let warnedEmptyProbe = false;
 
 export interface Probe {
   seconds: number;
@@ -102,10 +151,11 @@ export async function probe(file: string): Promise<Probe> {
   const bin = await ffmpegBinary();
   if (!bin) throw new Error("ffmpeg not found. Install ffmpeg or set FFMPEG_PATH.");
   // ffmpeg exits non-zero when no output is given; we only want the stderr banner.
+  const command = probeCommand(bin, ["-hide_banner", "-nostdin", ...inputGuards(), ...probeBudget(), "-i", file]);
   const stderr = await new Promise<string>((resolve) => {
     const child = execFile(
-      bin,
-      ["-hide_banner", "-nostdin", ...inputGuards(), "-i", file],
+      command.file,
+      command.args,
       { timeout: config.ffmpegTimeoutMs, killSignal: "SIGKILL" },
       (_err, _out, err) => {
         clearTimeout(timer);
@@ -119,6 +169,19 @@ export async function probe(file: string): Promise<Probe> {
     timer.unref?.();
   });
 
+  // ffmpeg says *something* about every file it opens, even an unreadable one,
+  // so nothing at all means it never got to look: it was killed by the timeout
+  // or by the address-space limit. The caller refuses the clip either way; this
+  // is so an operator whose limit is too low for their machine can see why
+  // every upload suddenly reads as unplayable.
+  if (!stderr.trim() && !warnedEmptyProbe) {
+    warnedEmptyProbe = true;
+    console.warn(
+      `[media] ffmpeg produced no output while probing a clip: it hit FFMPEG_TIMEOUT_MS (${config.ffmpegTimeoutMs}ms)` +
+        `${config.probeMemoryMb > 0 ? ` or PROBE_MEMORY_MB (${config.probeMemoryMb}MB)` : ""}, or it is not runnable here.`,
+    );
+  }
+
   const d = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(stderr);
   const seconds = d ? Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]) : 0;
 
@@ -128,17 +191,24 @@ export async function probe(file: string): Promise<Probe> {
   let width = 0;
   let height = 0;
   let coverPixels = 0;
-  let totalPixels = 0;
-  let videoStreams = 0;
+  // Keyed by ffmpeg's own "#file:index" rather than counted per line, because
+  // the banner names a stream more than once: under the probe budget above,
+  // every stream whose codec parameters it gave up on is named again in a
+  // "Could not find codec parameters for stream N (Video: ..., 8192x4608)"
+  // line carrying the same dimensions. Counting those would add a file's
+  // streams up twice and refuse legitimate clips for pixels they do not have.
+  const pixelsByStream = new Map<string, number>();
   for (const line of stderr.split("\n")) {
-    if (!line.includes("Video:")) continue;
-    videoStreams++;
+    // Only the stream listing, which is the one place each stream appears once.
+    const listed = /^\s*Stream #(\d+:\d+)/.exec(line);
+    if (!listed || !line.includes("Video:")) continue;
+    if (pixelsByStream.has(listed[1]!)) continue;
     const m = /Video:.*?,\s*(\d{2,6})x(\d{2,6})/.exec(line);
-    totalPixels += m ? Number(m[1]) * Number(m[2]) : Number.POSITIVE_INFINITY;
+    // Dimensions we cannot read are treated as too large rather than as zero.
+    pixelsByStream.set(listed[1]!, m ? Number(m[1]) * Number(m[2]) : Number.POSITIVE_INFINITY);
     // Cover art is counted separately: it is not the stream frames come from,
     // so it must not stand in for the video, but it is still decoded on every
-    // probe and so cannot be waved through either. Dimensions we cannot read
-    // are treated as too large rather than as zero.
+    // probe and so cannot be waved through either.
     if (line.includes("(attached pic)")) {
       coverPixels = m ? Math.max(coverPixels, Number(m[1]) * Number(m[2])) : Number.POSITIVE_INFINITY;
       continue;
@@ -151,7 +221,9 @@ export async function probe(file: string): Promise<Probe> {
       height = h;
     }
   }
-  return { seconds, width, height, coverPixels, totalPixels, videoStreams };
+  let totalPixels = 0;
+  for (const pixels of pixelsByStream.values()) totalPixels += pixels;
+  return { seconds, width, height, coverPixels, totalPixels, videoStreams: pixelsByStream.size };
 }
 
 /** Kept for callers that only want the length. */
@@ -160,8 +232,15 @@ export async function probeDuration(file: string): Promise<number> {
 }
 
 /**
- * Refuse work that is disproportionate to the upload's size before any decoding
- * happens: a tiny file can declare enormous dimensions or hours of runtime.
+ * Refuse work that is disproportionate to the upload's size before frames are
+ * extracted from it: a tiny file can declare enormous dimensions or hours of
+ * runtime.
+ *
+ * These budgets are checked against what `probe()` read, so they are applied
+ * after that one bounded ffmpeg run and before every other one. What bounds the
+ * probe itself is `-max_streams` (how many decoders may be opened at all) and
+ * `probeBudget()` (how far ffmpeg may read before it answers), not the numbers
+ * below.
  */
 export async function assertDecodable(file: string): Promise<Probe> {
   const p = await probe(file);
@@ -178,9 +257,11 @@ export async function assertDecodable(file: string): Promise<Probe> {
   if (p.coverPixels > config.maxPixels) {
     throw new Error("Clip carries artwork larger than this server will decode.");
   }
-  // Every stream above is one ffmpeg decodes while probing, so the budget has
-  // to hold for the file as a whole and not only for its largest picture: a
-  // stack of within-budget streams costs the sum of them, not the maximum.
+  // Every stream above is one ffmpeg opens a decoder for, so the budget has to
+  // hold for the file as a whole and not only for its largest picture: a stack
+  // of within-budget streams costs the sum of them, not the maximum. Refused
+  // here rather than during the probe, which is why the probe has a bound of
+  // its own.
   if (p.totalPixels > config.maxPixels) {
     throw new Error(`Clip carries ${p.videoStreams} video streams, more pixels than this server will decode.`);
   }

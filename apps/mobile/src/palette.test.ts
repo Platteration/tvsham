@@ -43,6 +43,23 @@ describe("palette", () => {
     assert.deepEqual(ACCENT_NAMES.slice().sort(), Object.keys(ACCENTS).sort());
   });
 
+  it("takes a name only when the table owns it", () => {
+    // ACCENTS is a plain object, so a membership test that is not an
+    // own-property test is true for every name on Object.prototype - and a
+    // stored accent of "toString" then indexes the table to undefined and
+    // leaves the whole app with no accent colour, which is every pairing
+    // checked below quietly not being checked at all. Walked rather than
+    // listed, so a name nobody remembered to add is covered too.
+    for (const inherited of Object.getOwnPropertyNames(Object.prototype)) {
+      assert.equal(isAccentName(inherited), false, `${inherited} is not an accent`);
+    }
+    // ...and the consequence, in the terms this file is about: whatever the
+    // check lets through has to be a colour.
+    for (const name of ACCENT_NAMES) {
+      assert.match(paletteFor("dark", name).accent, /^#[0-9a-f]{6}$/i);
+    }
+  });
+
   it("defines every colour in both schemes for every accent", () => {
     const keys = Object.keys(paletteFor("dark", "midnight")) as Array<keyof Palette>;
     for (const scheme of schemes) {

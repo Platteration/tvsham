@@ -159,3 +159,14 @@ export const MIN_USEFUL_CONFIDENCE = 0.35;
 export const CLIP_SECONDS = 8;
 /** Maximum clips per session before giving up. */
 export const MAX_CLIPS_PER_SESSION = 4;
+/**
+ * How long the app waits for one clip upload to finish, in milliseconds.
+ *
+ * Shared because the server has to wait at least this long for the body: its
+ * own `REQUEST_TIMEOUT_MS` is derived from this, so that a clip the app is
+ * still sending is never dropped underneath it. The two used to be set
+ * independently and disagreed — the server gave up at 120 s while the app was
+ * still willing to wait three minutes, which the app sees as a transport
+ * failure rather than an answer, and so queues and retries into the same wall.
+ */
+export const UPLOAD_DEADLINE_MS = 180_000;

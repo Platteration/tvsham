@@ -95,15 +95,31 @@ describe("untrusted shapes", () => {
     // The id names the session and the key is what every later call has to
     // carry; a reply with one and not the other is a session the app would be
     // answered 404 for four times over before it worked that out.
-    assert.deepEqual(cleanSessionHandle({ sessionId: "s1", sessionKey: "k1" }), {
-      sessionId: "s1",
-      sessionKey: "k1",
-    });
-    assert.equal(cleanSessionHandle({ sessionId: "s1" }), null);
-    assert.equal(cleanSessionHandle({ sessionKey: "k1" }), null);
-    assert.equal(cleanSessionHandle({ sessionId: "s1", sessionKey: 7 }), null);
+    const real = { sessionId: "3f1c6f0e-2c5b-4a1d-9d54-9f1f0f4a22b1", sessionKey: "a".repeat(43) };
+    assert.deepEqual(cleanSessionHandle(real), real);
+    assert.equal(cleanSessionHandle({ sessionId: real.sessionId }), null);
+    assert.equal(cleanSessionHandle({ sessionKey: real.sessionKey }), null);
+    assert.equal(cleanSessionHandle({ sessionId: real.sessionId, sessionKey: 7 }), null);
     assert.equal(cleanSessionHandle("nope"), null);
     assert.equal(cleanSessionHandle(null), null);
+  });
+
+  it("refuses a session whose halves cannot go in a URL and a header", () => {
+    // The id is interpolated into every request path and the key is sent as
+    // X-Session-Key, so both cross a protocol boundary - which is why the
+    // server constrains the charset of the clip key it compares. A value with
+    // a newline in it makes fetch throw a TypeError rather than answer, and a
+    // thrown fetch is what the app reads as "the network is down": the clip
+    // goes to the offline queue and is retried against the same answer for
+    // ever.
+    const key = "a".repeat(43);
+    const id = "3f1c6f0e-2c5b-4a1d-9d54-9f1f0f4a22b1";
+    assert.equal(cleanSessionHandle({ sessionId: id, sessionKey: "k\r\nX-Evil: 1" }), null);
+    assert.equal(cleanSessionHandle({ sessionId: "s1/../../health", sessionKey: key }), null);
+    assert.equal(cleanSessionHandle({ sessionId: "has space", sessionKey: key }), null);
+    assert.equal(cleanSessionHandle({ sessionId: id, sessionKey: "short" }), null);
+    assert.equal(cleanSessionHandle({ sessionId: "", sessionKey: key }), null);
+    assert.equal(cleanSessionHandle({ sessionId: id, sessionKey: `${key} ` }), null);
   });
 
   it("survives a response that is not an object at all", () => {

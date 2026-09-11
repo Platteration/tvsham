@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { UPLOAD_DEADLINE_MS } from "@tvsham/shared";
 import { config } from "./config.js";
 
 const composePath = new URL("../../../docker-compose.yml", import.meta.url);
@@ -56,5 +57,29 @@ describe("docker compose", () => {
         `published ports must be bound to loopback, found: ${line}`,
       );
     }
+  });
+});
+
+/**
+ * The server and the app each have a deadline for the same upload, and they
+ * used to be set independently: the server gave up on a body at 120 s while the
+ * app was still willing to send for 180. An 80 MB screen recording - the size
+ * the server itself accepts, off the library, which is one of the app's two
+ * headline flows - needs a sustained 5.3 Mbit/s to arrive inside 120 s. Past
+ * that the body is cut off mid-upload, which the app can only see as a
+ * transport failure: it queues the clip and every retry meets the same wall,
+ * with nothing on screen to say why.
+ */
+describe("upload deadlines", () => {
+  it("waits for a body longer than the app will spend sending one", () => {
+    assert.ok(
+      config.requestTimeoutMs > UPLOAD_DEADLINE_MS,
+      `the server gives up at ${config.requestTimeoutMs}ms, the app at ${UPLOAD_DEADLINE_MS}ms`,
+    );
+    // Node checks for expiry on its own 30 s interval, so a margin below that
+    // would still be the server dropping a body the app is sending.
+    assert.ok(config.requestTimeoutMs - UPLOAD_DEADLINE_MS >= 30_000, "and by more than node's own check interval");
+    // Node refuses to start when the headers wait is the longer of the two.
+    assert.ok(config.headersTimeoutMs <= config.requestTimeoutMs);
   });
 });

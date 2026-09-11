@@ -196,6 +196,19 @@ export function cleanIdentification(raw: unknown): Identification | undefined {
 }
 
 /**
+ * What each half of a session handle may contain. The id is interpolated into
+ * the request path and the key is sent as an HTTP header, so both cross a
+ * protocol boundary the way a clip key does on the server, and are constrained
+ * the way the server constrains that one. The server mints a UUID and a
+ * 43-character base64url secret, so this costs a real answer nothing; a value
+ * with a newline in it, from a server that is not the one the user thinks, is
+ * a thrown TypeError inside fetch rather than an ApiError, which the app reads
+ * as a network failure and retries against the same answer for ever.
+ */
+const SESSION_ID = /^[A-Za-z0-9._~-]{1,200}$/;
+const SESSION_KEY = /^[A-Za-z0-9_-]{16,200}$/;
+
+/**
  * A newly created session, or null when what came back cannot be used as one.
  * Both halves have to be there: the id names the session and the key is what
  * authorises every later call to it, so a response missing either is a session
@@ -205,7 +218,8 @@ export function cleanSessionHandle(raw: unknown): SessionHandle | null {
   const o = fields(raw);
   const sessionId = text(o.sessionId);
   const sessionKey = text(o.sessionKey);
-  return sessionId && sessionKey ? { sessionId, sessionKey } : null;
+  if (!SESSION_ID.test(sessionId) || !SESSION_KEY.test(sessionKey)) return null;
+  return { sessionId, sessionKey };
 }
 
 /**

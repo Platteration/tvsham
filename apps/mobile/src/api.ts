@@ -1,8 +1,9 @@
-import type {
-  CaptureSource,
-  HealthResponse,
-  RecognitionResult,
-  SessionHandle,
+import {
+  UPLOAD_DEADLINE_MS,
+  type CaptureSource,
+  type HealthResponse,
+  type RecognitionResult,
+  type SessionHandle,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
 import { TimeoutError, withDeadline } from "./deadline";
@@ -89,8 +90,13 @@ function region(): string | undefined {
  * How long each call may take. A server that is there answers the small JSON
  * ones at once; an upload carries the clip and then waits for the analysis
  * behind it, which is queued behind every other clip the server is working on.
+ *
+ * The upload deadline is shared with the server, whose own wait for a body is
+ * derived from it: this one has to be the shorter of the two, so that a slow
+ * upload ends in a message the user can act on rather than a socket dropped
+ * underneath it, which the app can only read as a network failure.
  */
-const TIMEOUTS = { control: 15_000, upload: 180_000 };
+const TIMEOUTS = { control: 15_000, upload: UPLOAD_DEADLINE_MS };
 
 export async function createSession(source: CaptureSource, hints?: string): Promise<SessionHandle> {
   const base = baseUrl();

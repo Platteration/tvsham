@@ -8,7 +8,17 @@ import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { CreateSessionResponse } from "@tvsham/shared";
 import { config } from "./config.js";
-import { addressBucket, app, caller, cleanClipKey, cleanHint, safeExtension, sweepTmpDir, weakToken } from "./index.js";
+import {
+  addressBucket,
+  app,
+  caller,
+  cleanClipKey,
+  cleanHint,
+  corsConfigProblem,
+  safeExtension,
+  sweepTmpDir,
+  weakToken,
+} from "./index.js";
 import { createSession, deleteSession, getSession, sessionCount, sessionsHeldBy, sweepSessions } from "./sessions.js";
 import { ffmpegBinary } from "./media.js";
 import { setClientForTests } from "./recognize.js";
@@ -193,6 +203,43 @@ describe("http", () => {
     });
   });
 
+  it("refuses to start rather than promise a CORS origin it will then turn away", () => {
+    // Hono answers the preflight for `*` with Access-Control-Allow-Origin: *,
+    // but no real Origin header is ever the literal `*`, so the Origin gate
+    // above refuses the request that follows: the preflight says yes and the
+    // request says no, with nothing in the log to explain it. Honouring it
+    // instead would mean letting every page on the internet spend the
+    // operator's budget, which is what the setting exists to prevent.
+    assert.match(corsConfigProblem("*") ?? "", /any web page/);
+    assert.match(corsConfigProblem(" * ") ?? "", /any web page/);
+    assert.equal(corsConfigProblem("https://dashboard.example"), null);
+    assert.equal(corsConfigProblem(undefined), null);
+  });
+
+  it("lets the origin an operator named through, and only that one", async () => {
+    const original = config.corsOrigin;
+    (config as { corsOrigin: string | undefined }).corsOrigin = "https://dashboard.example";
+    try {
+      const allowed = await app.request("/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://dashboard.example" },
+        body: '{"source":"camera"}',
+      });
+      assert.equal(allowed.status, 201);
+      await app.request(`/sessions/${((await allowed.json()) as { sessionId: string }).sessionId}`, {
+        method: "DELETE",
+      });
+      const other = await app.request("/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://evil.example" },
+        body: '{"source":"camera"}',
+      });
+      assert.equal(other.status, 403);
+    } finally {
+      (config as { corsOrigin: string | undefined }).corsOrigin = original;
+    }
+  });
+
   it("404s for unknown sessions", async () => {
     const form = new FormData();
     form.set("clip", new Blob([new Uint8Array(4)]), "clip.mp4");
@@ -252,8 +299,28 @@ describe("limits", () => {
     // of its own, or a forwarded header is a fresh quota per request again.
     assert.equal(addressBucket("not-an-ip"), "ip:unknown");
     assert.equal(addressBucket("aaaa"), "ip:unknown");
-    assert.equal(addressBucket("203.0.113.9:54321"), "ip:unknown");
+    assert.equal(addressBucket("203.0.113.9:"), "ip:unknown");
     assert.equal(addressBucket("  "), "ip:unknown");
+    assert.equal(addressBucket("__proto__"), "ip:unknown");
+  });
+
+  it("reads a hop its proxy wrote a port onto, rather than sharing one bucket for all of them", () => {
+    // Azure's App Service and Application Gateway append the client's port, and
+    // an IPv6 hop carrying one has to be bracketed. Neither is an address
+    // net.isIP will take, so refusing them outright puts every client behind
+    // such a proxy into ip:unknown together - which is the daily cap, the
+    // session cap and the upload cap all applying to the whole world at once,
+    // and the first caller of the day exhausting them for everybody.
+    assert.equal(addressBucket("203.0.113.9:54321"), addressBucket("203.0.113.9"));
+    assert.equal(addressBucket("[2001:db8:abcd:1234::1]:443"), addressBucket("2001:db8:abcd:1234::1"));
+    assert.equal(addressBucket("[2001:db8:abcd:1234::1]"), addressBucket("2001:db8:abcd:1234::1"));
+    assert.equal(addressBucket("[::ffff:203.0.113.7]:8080"), "ip:203.0.113.7");
+    // Two clients behind the same port-writing proxy still get their own bucket.
+    assert.notEqual(addressBucket("203.0.113.9:54321"), addressBucket("203.0.113.10:54321"));
+    // A bare IPv6 address is all colons and must not lose its last group to a
+    // port that is not there.
+    assert.equal(addressBucket("2001:db8:abcd:1234::443"), addressBucket("2001:db8:abcd:1234::1"));
+    assert.notEqual(addressBucket("2001:db8:abcd:1234::443"), addressBucket("2001:db8:abcd:9999::443"));
   });
 
   it("bills an IPv6 caller by its /64, which it cannot rotate out of", () => {
@@ -272,6 +339,32 @@ describe("limits", () => {
     assert.equal(addressBucket("203.0.113.7"), "ip:203.0.113.7");
     assert.equal(addressBucket("::ffff:203.0.113.7"), "ip:203.0.113.7");
     assert.notEqual(addressBucket("::ffff:203.0.113.8"), addressBucket("::ffff:203.0.113.7"));
+  });
+
+  it("says so once when the hop it is told to trust is not an address", () => {
+    // Failing closed is right, but silent is not: the operator sees one caller
+    // 429ing everyone and nothing that says their TRUST_PROXY count is wrong.
+    // This has to be the first unreadable trusted hop the process sees, which
+    // is why it sits beside the bucket tests rather than at the end.
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
+    const original = config.trustedProxyHops;
+    (config as { trustedProxyHops: number }).trustedProxyHops = 1;
+    try {
+      const bucket = (xff: string) =>
+        caller({
+          req: { header: (name: string) => (name.toLowerCase() === "x-forwarded-for" ? xff : undefined) },
+        } as unknown as Parameters<typeof caller>[0]);
+      assert.equal(bucket("unix:/var/run/proxy.sock"), "ip:unknown");
+      assert.equal(warnings.length, 1, "the first unreadable hop is reported");
+      assert.match(warnings[0]!, /TRUST_PROXY/);
+      assert.equal(bucket("also-not-an-address"), "ip:unknown");
+      assert.equal(warnings.length, 1, "and only the first: a request a second could spam the log");
+    } finally {
+      console.warn = warn;
+      (config as { trustedProxyHops: number }).trustedProxyHops = original;
+    }
   });
 
   it("refuses to let one caller hold every session slot", async () => {
@@ -482,8 +575,15 @@ describe("limits", () => {
     assert.equal(weakToken("secret"), true);
     assert.equal(weakToken("short"), true);
     assert.equal(weakToken("0123456789012345678901"), true, "22 characters is still guessable");
+    // Long enough to pass the length rule, so only the placeholder rule can
+    // catch it: a half-edited .env is as likely to pad the placeholder out as
+    // to leave it short, and every placeholder spelled on its own is already
+    // shorter than 24 characters.
+    assert.equal(weakToken("change-me-change-me-change-me"), true);
+    assert.equal(weakToken("tvsham-server-token-please-replace"), true);
     // What `openssl rand -hex 32` produces.
     assert.equal(weakToken("a".repeat(64)), false);
+    assert.equal(weakToken("9f3c1d7e08b45a26c7f0e91d3b8a5624"), false);
   });
 
   it("only accepts clip keys it can safely compare", () => {

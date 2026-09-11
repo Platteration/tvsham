@@ -57,7 +57,12 @@ will pass typecheck and tests but reopen the hole.
   is declared (`TRUST_PROXY` is a *count* of them), the hop is taken `hops` from the
   **right**: every proxy appends the address it saw, so the leftmost entry is the one
   the client typed. `addressBucket` answers `ip:unknown` for anything `net.isIP`
-  rejects, so a garbage hop cannot mint a bucket of its own either.
+  rejects, so a garbage hop cannot mint a bucket of its own either — but a hop is
+  normalised first (`bareAddress` strips a `:port` and the brackets round `[v6]:port`,
+  which Azure's App Service and Application Gateway write), because failing those closed
+  puts *every* client into the one shared bucket and makes each cap global. Anything
+  still unreadable warns once: fail-closed and silent is indistinguishable from the cap
+  being hit.
 - **A session is authorised by its key, never by the network.** `POST /sessions` mints
   a 256-bit key beside the id and returns it once; `GET`, `DELETE` and clip upload
   compare `X-Session-Key` with `timingSafeEqual` (404, never 403, on a miss), and the
@@ -72,12 +77,32 @@ will pass typecheck and tests but reopen the hole.
   all through.
 - **Frame extraction is one ffmpeg run, not one per frame.** Spawning per frame re-opens
   and re-probes the file each time: measured ~5x slower on a typical 8-second clip.
-- **Every ffmpeg run needs a timeout and a size budget.** The input is attacker-supplied;
-  a 424 KB file can declare 16000x9000 and cost gigabytes to decode one frame. The
-  budget is for the *file*, not for one stream: ffmpeg opens a decoder for every stream
-  while probing, so `-max_streams` (`MAX_STREAMS`) bounds the count before any of that
-  is allocated, and `assertDecodable` adds the streams' pixels up. Sixty copies of a
-  within-budget video is a 1.6 MB upload and 1.5 GB of memory.
+- **Bound the probe, not only what it reports.** The input is attacker-supplied; a
+  424 KB file can declare 16000x9000 and cost gigabytes to decode one frame. The budget
+  is for the *file*, not for one stream: ffmpeg opens a decoder for every stream while
+  probing, so `assertDecodable` adds the streams' pixels up as well as measuring the
+  largest. But those numbers are read *out of* `probe()`, so they can only ever refuse a
+  file after that run has allocated — eight streams of 8192x4608 are a 1.4 MB upload
+  that cost 749 MB to refuse, and `MAX_UPLOADS_PER_CALLER` gives one address three at
+  once, past the 2 GB the compose file allows. What bounds the probe itself is
+  `-max_streams` (`MAX_STREAMS`, which counts every stream, not only video) and
+  `probeBudget()`'s `-probesize`/`-analyzeduration 0`, which stops ffmpeg decoding
+  frames to work out what the container did not declare: 736 MB becomes 113 MB, and a
+  real clip costs what it always did, because dimensions, stream count and duration are
+  all in the header. `PROBE_MEMORY_MB` is a second line under that, and a probe that
+  will not fit is refused rather than waved through. Under the probe budget ffmpeg
+  *names a stream twice* — once in the listing, once in a "Could not find codec
+  parameters" line — so the parser keys streams by `#file:index`; counting banner lines
+  double-counts them and refuses real clips. `media.test.ts` measures the peak RSS of
+  `assertDecodable` on a hostile file against the cost of probing one stream of the same
+  size, because a test that only asserts the refusal passed happily while the refusal
+  cost three quarters of a gigabyte.
+- **The server waits for a body longer than the app will spend sending one.**
+  `REQUEST_TIMEOUT_MS` is derived from `UPLOAD_DEADLINE_MS` in `packages/shared`, which
+  is also the app's own deadline. Set independently they disagreed (120 s against
+  180 s), and a body cut off mid-upload is not an HTTP status: the app reads it as a
+  transport failure, queues the clip and retries it into the same wall for ever. 80 MB
+  is a whole screen recording, and 80 MB in 120 s is a sustained 5.3 Mbit/s uplink.
 - **Cap the frames carried in `s.evidence`.** Each clip re-sends the whole session, so
   without a ceiling the image tokens grow with the square of the clip count.
 - **Untrusted text (transcripts, hints, model write-ups) is fenced with a per-request
@@ -90,7 +115,10 @@ will pass typecheck and tests but reopen the hole.
   is only half of it: a browser still *delivers* a request that needs no preflight, so
   a cross-origin `Origin` is refused outright and `POST /sessions` takes nothing but
   `application/json` — the encodings an HTML form can produce are the ones that arrive
-  without an `Origin`.
+  without an `Origin`. `CORS_ORIGIN=*` is refused at startup rather than honoured: the
+  gate compares the Origin with that string, so a wildcard is a preflight answered 204
+  and the request behind it answered 403, and the alternative — treating it as "any
+  origin" — is the hole the gate exists to close.
 - **The listener binds loopback unless `HOST` says otherwise.** SEC-1 was fixed by
   binding the *published Docker port*; the listener itself still took every interface,
   so `npm run server` on a laptop put an unauthenticated server on every network the
@@ -110,8 +138,21 @@ will pass typecheck and tests but reopen the hole.
   carries `-format_whitelist` as well as `-protocol_whitelist`: an upload saved as
   clip.mp4 that begins `ffconcat version 1.0` is opened by the concat demuxer, which
   then names other local files for the still-permitted `file` protocol to read.
+- **A whitelist is an own-property lookup, never `key in TABLE` or a bare
+  `TABLE[key]`.** Every name on `Object.prototype` — `constructor`, `__proto__`,
+  `toString` — is truthy on a plain object table, so `in` accepted `toString` as an
+  accent name, `sanitise()` kept it, and `ACCENTS[accent]` then handed the whole app
+  `undefined` for its accent colour: the WCAG pairings `palette.test.ts` pins, silently
+  not pinning anything. `isAccentName` uses `Object.prototype.hasOwnProperty.call`, and
+  the tests walk `Object.getOwnPropertyNames(Object.prototype)` rather than listing
+  names someone has to remember. The other tables keyed by outside values are already
+  safe by construction (`oneOf` over an array in `shapes.ts`, literal comparisons in
+  `resolve.ts`); keep new ones that way.
 - **What comes back from the server, or off the disk, is coerced rather than cast**
-  (`shapes.ts`). The hop is cleartext by default and the payload is then persisted,
+  (`shapes.ts`). The session handle is part of that: the id goes in a URL path and the
+  key in an `X-Session-Key` header, so both are charset-checked the way the server
+  checks a clip key — a value with a newline in it makes `fetch` throw, and a thrown
+  fetch is what the app reads as "the network is down". The hop is cleartext by default and the payload is then persisted,
   so a `links` that is not an array is a blank screen that survives a restart.
 - **A response has a ceiling; the app's own stored lists do not.** `MAX_ITEMS` keeps one
   reply from filling the device, so it applies to what arrived over the wire —

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, after, describe, it } from "node:test";
@@ -9,6 +9,65 @@ import { config } from "./config.js";
 import { assertDecodable, extractAudio, extractFrames, ffmpegBinary, probe, probeDuration } from "./media.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The peak resident memory of every process this one starts while `work` runs,
+ * in MB, read from the kernel's own high-water mark.
+ *
+ * The point of measuring rather than asserting a refusal: a decode bomb is
+ * refused either way, and what the first fix round missed is that refusing it
+ * cost 749 MB, because the numbers the refusal is based on are read out of the
+ * ffmpeg run that already allocated them. Linux only, which is what CI runs;
+ * elsewhere the caller skips.
+ */
+function childProcesses(pid: number | string, found = new Set<string>()): Set<string> {
+  let tasks: string[] = [];
+  try {
+    tasks = readdirSync(`/proc/${pid}/task`);
+  } catch {
+    return found; // Exited between the two reads; whatever it peaked at is already recorded.
+  }
+  for (const task of tasks) {
+    let children = "";
+    try {
+      children = readFileSync(`/proc/${pid}/task/${task}/children`, "utf8");
+    } catch {
+      continue;
+    }
+    for (const child of children.split(/\s+/).filter(Boolean)) {
+      if (found.has(child)) continue;
+      found.add(child);
+      childProcesses(child, found);
+    }
+  }
+  return found;
+}
+
+function peakRssKb(pid: string): number {
+  try {
+    const m = /VmHWM:\s+(\d+) kB/.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function peakChildMemoryMb(work: () => Promise<unknown>): Promise<number> {
+  const peaks = new Map<string, number>();
+  // VmHWM only grows, so sampling often enough to catch a short-lived child is
+  // all this needs; the last sample after `work` settles catches the rest.
+  const sample = () => {
+    for (const pid of childProcesses(process.pid)) peaks.set(pid, Math.max(peaks.get(pid) ?? 0, peakRssKb(pid)));
+  };
+  const timer = setInterval(sample, 5);
+  try {
+    await work();
+  } finally {
+    sample();
+    clearInterval(timer);
+  }
+  return Math.max(0, ...peaks.values()) / 1024;
+}
 
 describe("media", () => {
   let dir = "";
@@ -246,6 +305,82 @@ describe("decode guards", () => {
       await assert.rejects(assertDecodable(clipPath), /2 video streams, more pixels than this server will decode/);
     } finally {
       (config as { maxPixels: number }).maxPixels = original;
+    }
+  });
+
+  it("probes a stack of oversized streams inside one stream's memory, not eight", async (t) => {
+    // The budgets in assertDecodable are read *out of* the probe, so they can
+    // only refuse a file after ffmpeg has opened a decoder for every stream in
+    // it and decoded frames to fill in what the container did not declare. That
+    // is what made a 1.4 MB upload cost 749 MB to refuse, three at a time past
+    // the 2 GB the shipped compose file allows. The probe's own bound is the
+    // fix, and a refusal on its own cannot tell you whether it is working.
+    if (process.platform !== "linux") return t.skip("peak memory is read from /proc");
+    const bin = await ffmpegBinary();
+    const one = path.join(dir, "budget-stream.mp4");
+    const many = path.join(dir, "budget-stream-x8.mkv");
+    const copies = 8; // config.maxStreams: the most a file may declare at all
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      // Exactly the per-stream budget, so the file is refused for the sum of
+      // its streams rather than for any one of them.
+      "-f", "lavfi", "-i", "testsrc=size=4096x2304:rate=2", "-t", "0.5",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-y", one,
+    ]);
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error", "-i", one,
+      ...Array.from({ length: copies }, () => ["-map", "0:v"]).flat(),
+      "-c", "copy", "-y", many,
+    ]);
+
+    // The yardstick is the same stream on its own, measured here rather than
+    // written down: probing eight of something must not cost eight times
+    // probing one of it, whatever this machine's ffmpeg costs to run at all.
+    const alone = await peakChildMemoryMb(() => assertDecodable(one));
+    assert.ok(alone > 4, `the probe should be visible in /proc, measured ${alone.toFixed(0)} MB`);
+    let refusal = "";
+    const stacked = await peakChildMemoryMb(async () => {
+      await assert.rejects(assertDecodable(many), (err: Error) => {
+        refusal = err.message;
+        return /more pixels than this server will decode/.test(err.message);
+      });
+    });
+    assert.ok(
+      stacked <= alone * 3,
+      `probing ${copies} streams cost ${stacked.toFixed(0)} MB against ${alone.toFixed(0)} MB for one of them`,
+    );
+    // ...and the bound must not have cost us the count: under it ffmpeg names a
+    // stream whose parameters it gave up on twice, so a probe that counted
+    // banner lines would say fourteen streams here and refuse real clips.
+    assert.match(refusal, new RegExp(`carries ${copies} video streams`));
+  });
+
+  it("fails closed when a probe cannot fit in the address space it is given", async (t) => {
+    // The second line behind the probe budget: if a format or a future ffmpeg
+    // allocates before it honours a probe size, the child dies rather than the
+    // container. A clip nobody could read is refused, never waved through.
+    if (process.platform === "win32") return t.skip("no ulimit");
+    const bin = await ffmpegBinary();
+    const clipPath = path.join(dir, "ordinary.mp4");
+    await execFileAsync(bin!, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10", "-t", "1",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-y", clipPath,
+    ]);
+    await assertDecodable(clipPath); // fine with the shipped limit
+    const original = config.probeMemoryMb;
+    (config as { probeMemoryMb: number }).probeMemoryMb = 16;
+    try {
+      await assert.rejects(assertDecodable(clipPath), /could not be read as video/);
+    } finally {
+      (config as { probeMemoryMb: number }).probeMemoryMb = original;
+    }
+    // ...and turning it off is what an operator whose machine needs more does.
+    (config as { probeMemoryMb: number }).probeMemoryMb = 0;
+    try {
+      await assertDecodable(clipPath);
+    } finally {
+      (config as { probeMemoryMb: number }).probeMemoryMb = original;
     }
   });
 

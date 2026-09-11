@@ -1,4 +1,5 @@
 import path from "node:path";
+import { UPLOAD_DEADLINE_MS } from "@tvsham/shared";
 
 function env(name: string, fallback?: string): string | undefined {
   const v = process.env[name];
@@ -29,8 +30,14 @@ const maxConcurrent = positiveInt(env("MAX_CONCURRENT"), 3);
 /** ...and once more so the per-caller share of it can be. */
 const maxUploadsInFlight = positiveInt(env("MAX_UPLOADS_IN_FLIGHT"), maxConcurrent * 2);
 
-/** ...and again, because node refuses to start if the headers wait is the longer one. */
-const requestTimeoutMs = positiveInt(env("REQUEST_TIMEOUT_MS"), 120_000);
+/**
+ * ...and again, because node refuses to start if the headers wait is the longer
+ * one. The default is the app's own upload deadline plus the 30 s granularity
+ * of node's expiry check and a little slack: the client must be the one that
+ * gives up first, or a slow upload is cut off mid-body and the app sees a
+ * transport failure rather than an answer.
+ */
+const requestTimeoutMs = positiveInt(env("REQUEST_TIMEOUT_MS"), UPLOAD_DEADLINE_MS + 60_000);
 
 export const config = {
   port: Number(env("PORT", "8787")),
@@ -99,6 +106,31 @@ export const config = {
    */
   maxStreams: positiveInt(env("MAX_STREAMS"), 8),
   /**
+   * How much of an upload ffmpeg may read while working out what is in it.
+   *
+   * The budgets above are checked against what the probe *reports*, so they
+   * cannot bound what the probe itself takes to find out: ffmpeg decodes frames
+   * from every stream to fill in what the container did not declare, and eight
+   * streams claiming 8192x4608 cost 736 MB to refuse. Reading a fixed short
+   * prefix instead costs 113 MB for that file and nothing measurable for a real
+   * clip, because the dimensions, stream count and duration are all in the
+   * container's own header. Not an environment variable: this is the only thing
+   * standing between a 1.4 MB upload and the container's memory limit, and
+   * there is no operator reason to raise it.
+   */
+  probeBytes: 100_000,
+  /**
+   * Address space one probe may take, in MB; 0 turns it off. A second line
+   * behind probeBytes rather than the bound itself: if a future ffmpeg, or a
+   * format nobody here tested, allocates before it honours a probe size, the
+   * child dies instead of the container. A probe of a real clip measures about
+   * 130 MB of address space and the worst refused one about 200 MB, so this is
+   * several times what any legitimate clip needs — but it is a hard ceiling on
+   * a machine whose allocator reserves more, so an operator who sees every clip
+   * refused as unreadable has this to raise or turn off.
+   */
+  probeMemoryMb: nonNegativeInt(env("PROBE_MEMORY_MB"), 512),
+  /**
    * How many proxies of your own stand in front of this server. Only set it
    * when they really are yours: X-Forwarded-For is otherwise just a string the
    * caller chooses, and the daily cap would count nothing.
@@ -144,9 +176,14 @@ export const config = {
   /**
    * Longest the server will wait for a whole request to arrive, and for its
    * headers. Node's own defaults are 5 minutes and 1 minute, which is how long
-   * a stalled upload holds its slot. The clip itself is at most 80 MB, so this
-   * is generous for any connection that is actually delivering one. Node checks
-   * for expiry on its own 30 s interval, so the real cut-off is this plus up to
+   * a stalled upload holds its slot. Shortening that is what MAX_UPLOADS_IN_FLIGHT
+   * and MAX_UPLOADS_PER_CALLER are really for, so this only has to be longer
+   * than the app will wait: 80 MB is a whole screen recording, and 80 MB in
+   * 120 s is a sustained 5.3 Mbit/s uplink, which is an ordinary mobile
+   * connection rather than a stalled one. Cutting it off there is silent and
+   * self-perpetuating — the app reads a dropped body as a network failure,
+   * queues the clip, and every retry meets the same wall. Node checks for
+   * expiry on its own 30 s interval, so the real cut-off is this plus up to
    * half a minute.
    */
   requestTimeoutMs,
