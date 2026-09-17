@@ -1,5 +1,7 @@
 # TVsham – notes for Claude Code
 
+Read AGENTS.md first. It holds the working rules every coding agent follows in this repository; this file adds the notes specific to this project.
+
 "Shazam for video": an Expo app records a few seconds of a TV (camera) or takes a screen
 recording, a Node server extracts frames + audio with ffmpeg, Claude identifies the
 content with web search, and the server returns verified Wikipedia / YouTube links.
