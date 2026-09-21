@@ -6,7 +6,6 @@
     "scheme": "tvsham",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "backgroundColor": "#0b0b10",
     "ios": {
       "bundleIdentifier": "com.platteration.tvsham",
@@ -19,22 +18,26 @@
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
-      },
-      "userInterfaceStyle": "automatic"
+      }
     },
     "android": {
       "package": "com.platteration.tvsham",
-      "edgeToEdgeEnabled": true,
+      "allowBackup": true,
+      "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_MEDIA_VIDEO"
       ],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png",
         "backgroundColor": "#0b0b10"
-      },
-      "userInterfaceStyle": "automatic"
+      }
     },
     "plugins": [
       "expo-router",
@@ -58,6 +61,12 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 160,
           "backgroundColor": "#0b0b10"
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
         }
       ],
       "./plugins/withCleartextTraffic"
