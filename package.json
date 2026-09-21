@@ -11,9 +11,9 @@
   "scripts": {
     "server": "npm run dev --workspace apps/server",
     "mobile": "npm run start --workspace apps/mobile",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "npm run lint --workspaces",
     "test:conventions": "node --test test/conventions.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run test:conventions"
   },

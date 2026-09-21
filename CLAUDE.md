@@ -22,7 +22,7 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 
 ```bash
 npm install
-npm run lint                       # eslint on the app
+npm run lint                       # eslint in every workspace
 npm run typecheck                  # every workspace
 npm test                           # node:test in both workspaces; no network or API key
 npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)

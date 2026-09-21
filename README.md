@@ -171,7 +171,7 @@ The result screen shows what it found, how sure it is, the evidence, and the lin
 ## Development
 
 ```bash
-npm run lint              # eslint on the app
+npm run lint              # eslint in every workspace
 npm run typecheck         # all workspaces
 npm test                  # unit tests in both workspaces
 npm run test:conventions  # the shared repository conventions (CONVENTIONS.md)
