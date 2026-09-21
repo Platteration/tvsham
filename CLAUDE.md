@@ -25,12 +25,14 @@ npm install
 npm run lint                       # eslint on the app
 npm run typecheck                  # every workspace
 npm test                           # node:test in both workspaces; no network or API key
+npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)
+npm run check                      # lint, typecheck, test, test:conventions: the gate before a push
 npm run server                     # tsx watch, port 8787
 npm run mobile                     # expo start
 cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 ```
 
-## Conventions
+## Project conventions
 
 - Keep server responses in the shapes from `packages/shared`; the app only renders them.
 - Network access in the server goes through `http.ts` `getJson` so tests can stub it.
@@ -173,3 +175,38 @@ will pass typecheck and tests but reopen the hole.
   `node_modules/expo/bundledNativeModules.json` when offline.
 - Editing files with scripted string replacement fails silently when the anchor text has
   drifted. Grep for the new text afterwards; two edits to this file were lost that way.
+
+## Native configuration
+
+**app.json states every native key the config test pins, even at its default**
+(`src/app-config.test.ts`, which runs `expo config --type introspect` and checks the
+merged manifest and plist, not only the file). On SDK 57 `newArchEnabled` has no reader
+and `android.edgeToEdgeEnabled` makes prebuild warn that edge-to-edge is mandatory -
+the `--json` introspect swallows that warning, so neither key may come back.
+`userInterfaceStyle` lives at the top level once and needs `expo-system-ui` to do
+anything on Android; the test proves the module is wired in by the
+`RCTRootViewBackgroundColor` only its plugin writes. `allowBackup` is true on purpose:
+the library and history are the user's own record, and the token is in
+expo-secure-store - whose backup-exclusion rules only reach the manifest because
+`expo-secure-store` is listed in `plugins` (prebuild-config applies a fixed set of
+plugins on its own, and that one is not in it; `faceIDPermission: false` keeps its
+default Face ID string out of the plist). `blockedPermissions` holds exactly one entry,
+SYSTEM_ALERT_WINDOW: the template grants it for the dev-menu overlay and its debug
+source set re-declares it, so a dev client loses nothing and a release build stops
+carrying 'display over other apps'. INTERNET is deliberately *not* blocked - this app
+talks to the user's server - and the test pins the block as exactly that list and
+ratchets the merged permission set to an accounted-for one. The adaptive icon is three
+generated layers from `scripts/make-icons.mjs`; the monochrome one is alpha-only
+because `render()` truncates floats and a themed icon reads only alpha anyway. Run
+`node scripts/make-icons.mjs` after touching the glyph; the tracked PNGs are reproduced
+byte for byte.
+
+## Conventions
+
+This repository follows `CONVENTIONS.md`, which is identical in every platteration
+repository and pinned by the conventions test (`npm run test:conventions`, or
+`tests/test_conventions.py` in a Python repository): the script set (`test`,
+`typecheck`, `lint`, `check`, `test:e2e`, `test:all`), Node 22 via `.nvmrc`, one
+`.editorconfig`, ESLint per stack, the `ci.yml` shape, the documents every repository
+carries and the README skeleton. `npm run check` is the gate before a push. To change a
+convention, change it in every repository in one pass and update the hashes in the test.

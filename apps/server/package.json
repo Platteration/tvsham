@@ -2,6 +2,7 @@
   "name": "@tvsham/server",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "TVsham recognition server: turns a short video clip into a Wikipedia article or YouTube link.",
   "main": "dist/index.js",
