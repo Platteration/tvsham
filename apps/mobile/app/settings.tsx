@@ -60,7 +60,7 @@ export default function SettingsScreen() {
 
   const reset = () =>
     confirmAction({
-      title: "Reset to defaults?",
+      title: "Reset settings?",
       message:
         "This puts every preference back to its default. Your library, history, server address, access token and the accents you own are not affected.",
       cancelLabel: "Cancel",
