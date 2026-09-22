@@ -4,11 +4,13 @@ import { ACCENT_NAMES } from "./palette.js";
 import {
   APPEARANCE_NAMES,
   DEFAULT_SETTINGS,
+  PREFERENCE_FIELDS,
   REDUCE_MOTION_NAMES,
   canSendTokenTo,
   cleanServerUrl,
   cleanSettings,
   isPrivateHost,
+  resetPreferences,
   serverUrlWarning,
   shouldReduceMotion,
   type Settings,
@@ -162,6 +164,43 @@ describe("reduced motion", () => {
     assert.equal(shouldReduceMotion("off", true), false);
     assert.equal(shouldReduceMotion("system", true), true);
     assert.equal(shouldReduceMotion("system", false), false);
+  });
+});
+
+describe("reset to defaults", () => {
+  // Every field away from its default, so a reset that touches a field shows.
+  const current: Settings = {
+    serverUrl: "http://192.168.1.20:8787",
+    token: "secret",
+    appearance: "light",
+    accent: "forest",
+    unlockedAccents: ["midnight", "forest"],
+    haptics: false,
+    reduceMotion: "on",
+  };
+
+  it("puts the preferences back and leaves the connection and the purchases alone", () => {
+    const reset = resetPreferences(current);
+    assert.deepEqual(reset, {
+      ...current,
+      appearance: "system",
+      accent: "midnight",
+      haptics: true,
+      reduceMotion: "system",
+    });
+    assert.equal(reset.serverUrl, current.serverUrl, "the server address is configuration, not a preference");
+    assert.equal(reset.token, current.token, "the token is configuration, not a preference");
+    assert.deepEqual(reset.unlockedAccents, current.unlockedAccents, "unlocked accents are purchases");
+    assert.notEqual(reset.unlockedAccents, current.unlockedAccents, "...copied, not shared");
+  });
+
+  it("touches exactly the fields PREFERENCE_FIELDS names", () => {
+    const reset = resetPreferences(current);
+    const changed = (Object.keys(current) as Array<keyof Settings>).filter(
+      (k) => JSON.stringify(reset[k]) !== JSON.stringify(current[k]),
+    );
+    assert.deepEqual(changed.sort(), [...PREFERENCE_FIELDS].sort());
+    assert.deepEqual(PREFERENCE_FIELDS, ["appearance", "accent", "haptics", "reduceMotion"]);
   });
 });
 

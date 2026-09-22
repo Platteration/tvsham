@@ -1,11 +1,23 @@
+import Constants from "expo-constants";
+import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import type { HealthResponse } from "@tvsham/shared";
 import { health } from "@/api";
-import { serverUrlWarning } from "@/settings";
-import { updateSettings, useSettings } from "@/store";
+import { confirmAction } from "@/confirm";
+import { isSafeWebUrl } from "@/format";
+import { APPEARANCE_NAMES, REDUCE_MOTION_NAMES, serverUrlWarning, type ReduceMotion } from "@/settings";
+import { resetSettings, updateSettings, useSettings } from "@/store";
 import { ACCENTS, ACCENT_NAMES, makeStyles, radius, space, useTheme, type AccentName, type Appearance } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
+
+/** Where the code lives. Opened through the same gate every other link passes. */
+const SOURCE_URL = "https://github.com/Platteration/tvsham";
+
+// Typed against the enums, so a value the validator keeps cannot be one the
+// control does not offer.
+const APPEARANCE_LABELS: Record<Appearance, string> = { system: "System", light: "Light", dark: "Dark" };
+const REDUCE_MOTION_LABELS: Record<ReduceMotion, string> = { system: "System", on: "On", off: "Off" };
 
 export default function SettingsScreen() {
   const styles = useStyles();
@@ -17,6 +29,7 @@ export default function SettingsScreen() {
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   // Saving drops a URL it cannot use, so say so while the user can still fix it.
   const urlWarning = serverUrlWarning(serverUrl);
+  const version = Constants.expoConfig?.version ?? "0.0.0";
 
   const save = async () => {
     await updateSettings({ serverUrl: serverUrl.trim(), token: token.trim() });
@@ -43,6 +56,20 @@ export default function SettingsScreen() {
     } finally {
       setTesting(false);
     }
+  };
+
+  const reset = () =>
+    confirmAction({
+      title: "Reset to defaults?",
+      message:
+        "Appearance, accent, vibration and reduced motion go back to how the app shipped. Your server address, access token and the accents you own are kept.",
+      cancelLabel: "Cancel",
+      confirmLabel: "Reset",
+      onConfirm: () => void resetSettings(),
+    });
+
+  const openSource = () => {
+    if (isSafeWebUrl(SOURCE_URL)) void WebBrowser.openBrowserAsync(SOURCE_URL);
   };
 
   return (
@@ -92,21 +119,11 @@ export default function SettingsScreen() {
           <Muted style={{ marginTop: space.xs }}>
             Follow the system, or pin one. The camera screen stays dark either way.
           </Muted>
-          <View style={styles.segment}>
-            {(["system", "light", "dark"] as Appearance[]).map((a) => (
-              <Pressable
-                key={a}
-                onPress={() => void updateSettings({ appearance: a })}
-                style={[styles.segmentTab, settings.appearance === a && styles.segmentTabActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: settings.appearance === a }}
-              >
-                <Text style={[styles.segmentText, settings.appearance === a && styles.segmentTextActive]}>
-                  {a === "system" ? "System" : a === "light" ? "Light" : "Dark"}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          <Segmented
+            options={APPEARANCE_NAMES.map((a) => ({ value: a, label: APPEARANCE_LABELS[a] }))}
+            value={settings.appearance}
+            onChange={(a) => void updateSettings({ appearance: a })}
+          />
 
           <Text style={styles.label}>Accent</Text>
           <View style={styles.swatchRow}>
@@ -121,7 +138,7 @@ export default function SettingsScreen() {
                   style={[styles.swatch, selected && { borderColor: c.text }, !owned && { opacity: 0.4 }]}
                   accessibilityRole="button"
                   accessibilityLabel={ACCENTS[name].label}
-                  accessibilityState={{ selected }}
+                  accessibilityState={{ selected, disabled: !owned }}
                 >
                   <View style={[styles.swatchDot, { backgroundColor: ACCENTS[name].accent }]} />
                   <Muted style={{ fontSize: 12 }}>{ACCENTS[name].label}</Muted>
@@ -132,19 +149,101 @@ export default function SettingsScreen() {
         </Card>
 
         <Card>
-          <Title>How it works</Title>
-          <Muted style={{ marginTop: space.xs }}>
-            Each clip is a few seconds of video. The server pulls out a handful of frames and (if configured) a transcript of the dialogue, asks Claude to identify the show, film or video with web search to verify, then fetches the matching Wikipedia article or YouTube link. Clips are deleted as soon as they have been analysed.
+          <Title>Feedback and motion</Title>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Vibration</Text>
+              <Muted style={{ marginTop: 2 }}>
+                A short buzz when a clip starts, when a result is in and when something is saved.
+              </Muted>
+            </View>
+            <Switch
+              value={settings.haptics}
+              onValueChange={(on) => void updateSettings({ haptics: on })}
+              trackColor={{ true: c.accent, false: c.border }}
+              accessibilityLabel="Vibration"
+            />
+          </View>
+
+          <Text style={styles.label}>Reduce motion</Text>
+          <Muted>
+            Stills the sonar rings and the breathing capture button. System follows the phone’s own accessibility setting.
           </Muted>
+          <Segmented
+            options={REDUCE_MOTION_NAMES.map((m) => ({ value: m, label: REDUCE_MOTION_LABELS[m] }))}
+            value={settings.reduceMotion}
+            onChange={(m) => void updateSettings({ reduceMotion: m })}
+          />
+
+          <Text style={styles.label}>Reset</Text>
+          <Muted>
+            Puts appearance, accent, vibration and reduced motion back to how the app shipped. The server address, the access token and the accents you own are connection settings and purchases, not preferences, and stay as they are.
+          </Muted>
+          <Button label="Reset to defaults" variant="ghost" compact style={styles.resetButton} onPress={reset} />
+        </Card>
+
+        <Card>
+          <Title>How it works</Title>
+          <Muted style={{ marginTop: space.xs }}>TVsham {version} · Shazam, but for video.</Muted>
+          <Muted style={{ marginTop: space.sm }}>
+            Each clip is a few seconds of video. The server pulls out a handful of frames and (if configured) a transcript of the dialogue, asks Claude to identify the show, film or video with web search to verify, then fetches the matching Wikipedia article or YouTube link.
+          </Muted>
+          <Muted style={{ marginTop: space.sm }}>
+            Everything the app sends — each clip, your optional hint, the access token and a random per-install id — goes only to the server address you set above, and the server deletes a clip as soon as it has been analysed.
+          </Muted>
+          <Pressable
+            onPress={openSource}
+            hitSlop={8}
+            style={styles.linkRow}
+            accessibilityRole="link"
+            accessibilityLabel="MIT licence and source code"
+          >
+            <Text style={styles.link}>MIT licence · source</Text>
+          </Pressable>
         </Card>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
+/**
+ * One control for every three-way choice, so Appearance and Reduce motion
+ * share a shape. Each option is a button carrying its selected state.
+ */
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  value: T;
+  onChange: (next: T) => void;
+}) {
+  const styles = useStyles();
+  return (
+    <View style={styles.segment}>
+      {options.map((o) => {
+        const selected = value === o.value;
+        return (
+          <Pressable
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            style={[styles.segmentTab, selected && styles.segmentTabActive]}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+          >
+            <Text style={[styles.segmentText, selected && styles.segmentTextActive]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 const useStyles = makeStyles((c) => ({
   container: { padding: space.lg, gap: space.lg },
   label: { color: c.muted, fontSize: 13, fontWeight: "600", marginTop: space.lg, marginBottom: space.xs },
+  rowLabel: { color: c.text, fontSize: 16, fontWeight: "600" },
   input: {
     backgroundColor: c.surfaceAlt,
     color: c.text,
@@ -167,6 +266,10 @@ const useStyles = makeStyles((c) => ({
   segmentTabActive: { backgroundColor: c.surface },
   segmentText: { color: c.muted, fontWeight: "600", fontSize: 14 },
   segmentTextActive: { color: c.text },
+  switchRow: { flexDirection: "row", alignItems: "center", gap: space.md, marginTop: space.md },
+  resetButton: { marginTop: space.md, alignSelf: "flex-start" },
+  linkRow: { alignSelf: "flex-start", marginTop: space.md },
+  link: { color: c.accent, fontSize: 14, fontWeight: "600" },
   swatchRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
   swatch: {
     alignItems: "center",

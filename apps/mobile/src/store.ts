@@ -4,7 +4,8 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
-import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, type Settings } from "./settings";
+import { setHapticsEnabled } from "./feedback";
+import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, resetPreferences, type Settings } from "./settings";
 import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
@@ -56,6 +57,10 @@ function defaultServerUrl(): string {
 }
 
 const settingsStore = createStore<Settings>({ ...DEFAULT_SETTINGS, serverUrl: defaultServerUrl() });
+// The Vibration setting gates every haptic through a module flag rather than a
+// hook, so the first tap after hydration already obeys it.
+settingsStore.subscribe(() => setHapticsEnabled(settingsStore.get().haptics));
+setHapticsEnabled(settingsStore.get().haptics);
 const libraryStore = createStore<SavedItem[]>([]);
 const historyStore = createStore<SavedItem[]>([]);
 const hydrated = createStore<boolean>(false);
@@ -147,6 +152,12 @@ async function persistSettings(): Promise<void> {
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   settingsStore.set((prev) => cleanSettings({ ...prev, ...patch }, prev));
   await Promise.all([persistSettings(), writeToken(settingsStore.get().token)]);
+}
+
+/** Reset to defaults: the preference fields only (`PREFERENCE_FIELDS`); the token is untouched, so the keychain is too. */
+export async function resetSettings(): Promise<void> {
+  settingsStore.set(resetPreferences);
+  await persistSettings();
 }
 
 /**

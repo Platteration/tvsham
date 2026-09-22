@@ -176,6 +176,37 @@ will pass typecheck and tests but reopen the hole.
 - Editing files with scripted string replacement fails silently when the anchor text has
   drifted. Grep for the new text afterwards; two edits to this file were lost that way.
 
+## Settings
+
+Every record the app keeps on the device is named once, in `KEYS` in
+`apps/mobile/src/settings.ts`: `tvsham.settings.v1` (preferences and the server URL),
+`tvsham.library.v1` and `tvsham.history.v1` (the user's own lists), `tvsham.device.v1`
+(the per-install id), `tvsham.queue.v1` (clips waiting for the server), all in
+AsyncStorage, and `tvsham.token.v1` in expo-secure-store.
+`settings-contract.test.ts` pins the table, the row list, the enum tables and
+`PREFERENCE_FIELDS` as literals, and greps the screens for a key string, a direct
+`expo-haptics` import or a bare `Alert.alert`: a renamed key orphans every user's record
+without any other test noticing. The validator is `cleanSettings(raw, fallback)` in the
+same module - enum tables typed `Record<Union, true>`, own-property lookups only, and
+the settings in force as the fallback so one bad field costs one field, never the
+record; `store.ts` is the only reader and writer and goes through it on hydrate and on
+every update. Its test walks `Object.getOwnPropertyNames(Object.prototype)` through
+every enum field, built with `JSON.parse` so `__proto__` is an own key, and its
+round-trip iterates literal lists rather than the exported name arrays, which derive
+from the tables under test and would drop a member with them. The rows are Appearance
+(`appearance`; `system` resolves to dark when the OS states no preference), Accent,
+Vibration (`haptics`: a module flag in `feedback.ts` that the store sets, and every
+haptic is a named moment there), Reduce motion (`reduceMotion`, three-state:
+`useReduceMotion` in `motion.tsx` resolves `system` through `AccessibilityInfo`, and the
+pure `shouldReduceMotion` sits beside the validator) and Reset to defaults, which is
+confirmed and puts back exactly `PREFERENCE_FIELDS` - the server address, the token and
+the unlocked accents are connection configuration and purchases, not preferences.
+Confirmations go through `confirm.ts` (`window.confirm` on the web, `Alert.alert`
+elsewhere, because react-native-web's `Alert` is an empty stub), and the rule for when
+to ask is that the action destroys what the app cannot restore from inside itself:
+removing a saved item and clearing the recent list. The version in the "How it works"
+card is `Constants.expoConfig?.version` from `expo-constants`.
+
 ## Native configuration
 
 **app.json states every native key the config test pins, even at its default**

@@ -1,7 +1,35 @@
 import { useEffect, useState } from "react";
-import { Animated, Easing, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { AccessibilityInfo, Animated, Easing, Platform, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Svg, { Circle } from "react-native-svg";
+import { shouldReduceMotion, type ReduceMotion } from "./settings";
+import { useSettings } from "./store";
 import { makeStyles, useTheme } from "./theme";
+
+/**
+ * Whether decorative motion should be stilled: the Reduce motion setting when
+ * it is pinned, the phone's own accessibility answer when it says to follow
+ * the system. Two guards the platforms force: the native query rejects when
+ * its module is absent (test renderers), which reads as "not reduced"; and
+ * react-native-web answers true when `matchMedia` is missing (jsdom), so on
+ * the web a page without it reads as "not reduced" too.
+ */
+export function useReduceMotion(setting: ReduceMotion): boolean {
+  const [system, setSystem] = useState(false);
+  const noMediaQueries = Platform.OS === "web" && typeof globalThis.matchMedia !== "function";
+  useEffect(() => {
+    if (setting !== "system" || noMediaQueries) return;
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((on) => live && setSystem(on))
+      .catch(() => live && setSystem(false));
+    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", setSystem);
+    return () => {
+      live = false;
+      sub.remove();
+    };
+  }, [setting, noMediaQueries]);
+  return shouldReduceMotion(setting, !noMediaQueries && system);
+}
 
 /**
  * Sonar rings that expand out of the capture button while a clip is being taken.
@@ -9,11 +37,12 @@ import { makeStyles, useTheme } from "./theme";
  */
 export function SonarRings({ size, active }: { size: number; active: boolean }) {
   const c = useTheme();
+  const reduce = useReduceMotion(useSettings().reduceMotion);
   // Held as state, not a ref: these values are read while rendering.
   const [rings] = useState(() => [0, 1, 2].map(() => new Animated.Value(0)));
 
   useEffect(() => {
-    if (!active) {
+    if (!active || reduce) {
       for (const r of rings) r.setValue(0);
       return;
     }
@@ -35,9 +64,10 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
     return () => {
       for (const l of loops) l.stop();
     };
-  }, [active, rings]);
+  }, [active, reduce, rings]);
 
-  if (!active) return null;
+  // Stilled, the rings say nothing the red stop button and the status pill do not.
+  if (!active || reduce) return null;
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]}>
@@ -67,8 +97,9 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
 /** A slow breathing scale, used on the capture button so it never looks frozen. */
 export function Breathing({ active, children, style }: { active: boolean; children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   const [value] = useState(() => new Animated.Value(0));
+  const reduce = useReduceMotion(useSettings().reduceMotion);
   useEffect(() => {
-    if (!active) {
+    if (!active || reduce) {
       value.setValue(0);
       return;
     }
@@ -80,7 +111,7 @@ export function Breathing({ active, children, style }: { active: boolean; childr
     );
     loop.start();
     return () => loop.stop();
-  }, [active, value]);
+  }, [active, reduce, value]);
   return (
     <Animated.View style={[style, { transform: [{ scale: value.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) }] }]}>
       {children}

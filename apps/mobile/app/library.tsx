@@ -1,5 +1,6 @@
-import { Alert, Image, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 import type { SavedItem } from "@tvsham/shared";
+import { confirmAction } from "@/confirm";
 import { clearHistory, removeSaved, saveHistoryItem, setWatched, useHistory, useLibrary } from "@/store";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Chip, Empty, Muted } from "@/ui";
@@ -12,10 +13,13 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
   const primary = item.links[0];
   const thumb = safeImageUri(item.links.find((l) => safeImageUri(l.imageUrl))?.imageUrl);
   const confirmRemove = () =>
-    Alert.alert("Remove from saved?", item.identification.title, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Remove", style: "destructive", onPress: () => void removeSaved(item.id) },
-    ]);
+    confirmAction({
+      title: "Remove from saved?",
+      message: item.identification.title,
+      cancelLabel: "Cancel",
+      confirmLabel: "Remove",
+      onConfirm: () => void removeSaved(item.id),
+    });
 
   return (
     <Pressable
@@ -59,6 +63,20 @@ function Row({ item, recent }: { item: SavedItem; recent?: boolean }) {
   );
 }
 
+/**
+ * The recent list is the one record the app cannot bring back once it is
+ * gone - nothing else holds it - so clearing it asks first. What was saved for
+ * later is its own list and stays.
+ */
+const confirmClear = () =>
+  confirmAction({
+    title: "Clear recent identifications?",
+    message: "The list of what you have identified cannot be brought back. Anything saved for later stays.",
+    cancelLabel: "Cancel",
+    confirmLabel: "Clear",
+    onConfirm: () => void clearHistory(),
+  });
+
 export default function LibraryScreen() {
   const styles = useStyles();
   const saved = useLibrary();
@@ -86,7 +104,7 @@ export default function LibraryScreen() {
           {section.recent ? (
             <Pressable
               hitSlop={8}
-              onPress={() => void clearHistory()}
+              onPress={confirmClear}
               accessibilityRole="button"
               accessibilityLabel="Clear recent identifications"
             >

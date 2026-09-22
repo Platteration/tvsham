@@ -15,6 +15,8 @@ export const KEYS = {
   library: "tvsham.library.v1",
   history: "tvsham.history.v1",
   device: "tvsham.device.v1",
+  /** Clips recorded while the server was out of reach; the files are beside it on disk. */
+  queue: "tvsham.queue.v1",
   /**
    * The server token is a shared secret for a paid service, so it lives in the
    * keychain (expo-secure-store) rather than AsyncStorage, which is a plain
@@ -204,4 +206,18 @@ export function cleanSettings(raw: unknown, fallback: Settings): Settings {
  */
 export function shouldReduceMotion(setting: ReduceMotion, system: boolean): boolean {
   return setting === "system" ? system : setting === "on";
+}
+
+/**
+ * The fields Reset to defaults touches: what the app looks and feels like.
+ * The server address and token are connection configuration and the unlocked
+ * accents are purchases; neither is a preference, so neither is reset.
+ */
+export const PREFERENCE_FIELDS = ["appearance", "accent", "haptics", "reduceMotion"] as const;
+
+/** Reset to defaults: exactly `PREFERENCE_FIELDS` go back to how the app shipped. */
+export function resetPreferences(current: Settings): Settings {
+  const next: Settings = { ...current, unlockedAccents: [...current.unlockedAccents] };
+  for (const field of PREFERENCE_FIELDS) Object.assign(next, { [field]: DEFAULT_SETTINGS[field] });
+  return next;
 }
