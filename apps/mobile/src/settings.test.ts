@@ -10,6 +10,8 @@ import {
   cleanServerUrl,
   cleanSettings,
   isPrivateHost,
+  hydrateSettings,
+  motionRuns,
   resetPreferences,
   serverUrlWarning,
   shouldReduceMotion,
@@ -164,6 +166,41 @@ describe("reduced motion", () => {
     assert.equal(shouldReduceMotion("off", true), false);
     assert.equal(shouldReduceMotion("system", true), true);
     assert.equal(shouldReduceMotion("system", false), false);
+  });
+
+  it("runs a decorative animation only while its subject is active and motion is not reduced", () => {
+    assert.equal(motionRuns(true, false), true);
+    assert.equal(motionRuns(true, true), false);
+    assert.equal(motionRuns(false, false), false);
+    assert.equal(motionRuns(false, true), false);
+  });
+});
+
+describe("hydration", () => {
+  // What is in force at hydrate is the defaults plus the built-in server
+  // address; on an update it is the previous record. Either way a bad field
+  // costs that field, taken from what is in force and not from the defaults.
+  const inForce: Settings = { ...DEFAULT_SETTINGS, serverUrl: "http://10.0.0.5:8787", appearance: "dark", haptics: false };
+
+  it("cleans the stored record against the settings in force, not the bare defaults", () => {
+    const out = hydrateSettings({ appearance: "toString", haptics: "no", accent: "sunset" }, "tok", inForce);
+    assert.equal(out.appearance, "dark");
+    assert.equal(out.haptics, false);
+    assert.equal(out.accent, "sunset");
+    assert.equal(out.serverUrl, "http://10.0.0.5:8787");
+    assert.equal(out.token, "tok");
+  });
+
+  it("lays the keychain's answer over whatever token the record still carries", () => {
+    assert.equal(hydrateSettings({ token: "left in plain storage" }, "from the keychain", inForce).token, "from the keychain");
+    // ...and with no answer, the record's copy does not come back either.
+    assert.equal(hydrateSettings({ token: "left in plain storage" }, undefined, inForce).token, inForce.token);
+  });
+
+  it("survives a record that is not an object", () => {
+    for (const raw of [null, undefined, 7, "settings", true, []]) {
+      assert.deepEqual(hydrateSettings(raw, undefined, inForce), inForce, String(raw));
+    }
   });
 });
 

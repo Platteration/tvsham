@@ -209,6 +209,27 @@ export function shouldReduceMotion(setting: ReduceMotion, system: boolean): bool
 }
 
 /**
+ * The settings record as hydrate reads it: the stored record with the token
+ * the keychain answered laid over it, cleaned against what is in force - the
+ * defaults plus the built-in server address at launch - rather than the bare
+ * defaults, so a record from another build (or, on a shared origin, another
+ * app) costs at most the fields it got wrong. The keychain's answer wins over
+ * whatever token the record still carries from before the migration.
+ */
+export function hydrateSettings(saved: unknown, token: string | undefined, prev: Settings): Settings {
+  return cleanSettings({ ...(saved as object | null), token }, prev);
+}
+
+/**
+ * Whether a decorative animation runs: only while what it decorates is active
+ * and motion is not reduced. SonarRings and Breathing both decide through
+ * this, in the effect that starts the loop and in the render that draws it.
+ */
+export function motionRuns(active: boolean, reduce: boolean): boolean {
+  return active && !reduce;
+}
+
+/**
  * The fields Reset to defaults touches: what the app looks and feels like.
  * The server address and token are connection configuration and the unlocked
  * accents are purchases; neither is a preference, so neither is reset.

@@ -5,7 +5,7 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 import { setHapticsEnabled } from "./feedback";
-import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, resetPreferences, type Settings } from "./settings";
+import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, hydrateSettings, resetPreferences, type Settings } from "./settings";
 import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
@@ -105,7 +105,7 @@ export function hydrate(): Promise<void> {
       if (savedSettings || token) {
         // Field by field against what is in force: a record from another build
         // (or, on a shared origin, another app) costs at most the fields it got wrong.
-        settingsStore.set((prev) => cleanSettings({ ...(savedSettings as object | null), token }, prev));
+        settingsStore.set((prev) => hydrateSettings(savedSettings, token, prev));
       }
       // Finish the migration now rather than whenever the user next happens to
       // change a setting: until this record is rewritten the token is still

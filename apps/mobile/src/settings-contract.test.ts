@@ -87,6 +87,24 @@ describe("the settings contract", () => {
     }
   });
 
+  it("decides in the pure module what the React Native modules only carry out", () => {
+    // store.ts and motion.tsx import React Native, so this suite cannot run
+    // them: what they decide lives in settings.ts, tested there, and this
+    // pins by reading that they still defer to it. Hydrate cleans against
+    // the settings in force (`prev`), and both animations run only while
+    // motionRuns says so - a bare `!active || reduce` here would be a second
+    // copy of that decision with no test behind it.
+    const store = readFileSync(join(root, "src/store.ts"), "utf8");
+    assert.match(store, /settingsStore\.set\(\(prev\) => hydrateSettings\(savedSettings, token, prev\)\)/);
+    const motion = readFileSync(join(root, "src/motion.tsx"), "utf8");
+    assert.equal((motion.match(/motionRuns\(active, /g) ?? []).length, 2, "SonarRings and Breathing");
+    // ...and `active` is only ever handed to it: two props (each named in
+    // the destructuring and again in its type), two hand-offs. Any other use
+    // is a decision taken outside the tested function.
+    assert.equal((motion.match(/\bactive\b/g) ?? []).length, 6, "active: two props typed, passed twice");
+    assert.doesNotMatch(motion, /\breduce\b/, "the reduce answer goes straight into motionRuns");
+  });
+
   it("opens the source link through the same gate as every other link", () => {
     const settings = readFileSync(join(root, "app/settings.tsx"), "utf8");
     assert.match(settings, /const SOURCE_URL = "https:\/\/github\.com\/Platteration\/tvsham"/);

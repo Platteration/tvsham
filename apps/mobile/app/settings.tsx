@@ -62,7 +62,7 @@ export default function SettingsScreen() {
     confirmAction({
       title: "Reset to defaults?",
       message:
-        "Appearance, accent, vibration and reduced motion go back to how the app shipped. Your server address, access token and the accents you own are kept.",
+        "This puts every preference back to its default. Your library, history, server address, access token and the accents you own are not affected.",
       cancelLabel: "Cancel",
       confirmLabel: "Reset",
       onConfirm: () => void resetSettings(),

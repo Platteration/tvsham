@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AccessibilityInfo, Animated, Easing, Platform, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { shouldReduceMotion, type ReduceMotion } from "./settings";
+import { motionRuns, shouldReduceMotion, type ReduceMotion } from "./settings";
 import { useSettings } from "./store";
 import { makeStyles, useTheme } from "./theme";
 
@@ -37,12 +37,12 @@ export function useReduceMotion(setting: ReduceMotion): boolean {
  */
 export function SonarRings({ size, active }: { size: number; active: boolean }) {
   const c = useTheme();
-  const reduce = useReduceMotion(useSettings().reduceMotion);
+  const running = motionRuns(active, useReduceMotion(useSettings().reduceMotion));
   // Held as state, not a ref: these values are read while rendering.
   const [rings] = useState(() => [0, 1, 2].map(() => new Animated.Value(0)));
 
   useEffect(() => {
-    if (!active || reduce) {
+    if (!running) {
       for (const r of rings) r.setValue(0);
       return;
     }
@@ -64,10 +64,10 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
     return () => {
       for (const l of loops) l.stop();
     };
-  }, [active, reduce, rings]);
+  }, [running, rings]);
 
   // Stilled, the rings say nothing the red stop button and the status pill do not.
-  if (!active || reduce) return null;
+  if (!running) return null;
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]}>
@@ -97,9 +97,9 @@ export function SonarRings({ size, active }: { size: number; active: boolean }) 
 /** A slow breathing scale, used on the capture button so it never looks frozen. */
 export function Breathing({ active, children, style }: { active: boolean; children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   const [value] = useState(() => new Animated.Value(0));
-  const reduce = useReduceMotion(useSettings().reduceMotion);
+  const running = motionRuns(active, useReduceMotion(useSettings().reduceMotion));
   useEffect(() => {
-    if (!active || reduce) {
+    if (!running) {
       value.setValue(0);
       return;
     }
@@ -111,7 +111,7 @@ export function Breathing({ active, children, style }: { active: boolean; childr
     );
     loop.start();
     return () => loop.stop();
-  }, [active, reduce, value]);
+  }, [running, value]);
   return (
     <Animated.View style={[style, { transform: [{ scale: value.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) }] }]}>
       {children}

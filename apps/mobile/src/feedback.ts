@@ -1,51 +1,23 @@
 /**
- * Haptic feedback, behind the Vibration setting. Each function names a moment
- * in the app rather than a device effect, so a screen says what happened and
- * this module decides whether the phone answers. The gate is a module flag
- * the store sets whenever the settings change, not a hook: a moment fires
- * from the first tap after hydration, before any screen has re-rendered.
- * Free of React Native itself; expo-haptics is the only import.
+ * The moments in src/feedback-gate.ts bound to the phone. This is the one
+ * module that imports expo-haptics (the contract test pins that), and it has
+ * no state and no branch of its own: every haptic goes through the gate, so
+ * the Vibration setting cannot be bypassed from here.
  */
 import * as Haptics from "expo-haptics";
+import { createFeedback, type ImpactStyle, type NoticeKind } from "./feedback-gate";
 
-let enabled = true;
+const IMPACT: Record<ImpactStyle, Haptics.ImpactFeedbackStyle> = {
+  light: Haptics.ImpactFeedbackStyle.Light,
+  medium: Haptics.ImpactFeedbackStyle.Medium,
+};
 
-/** Set by the store; nothing here reads storage. */
-export function setHapticsEnabled(on: boolean): void {
-  enabled = on;
-}
+const NOTICE: Record<NoticeKind, Haptics.NotificationFeedbackType> = {
+  success: Haptics.NotificationFeedbackType.Success,
+  warning: Haptics.NotificationFeedbackType.Warning,
+};
 
-/** Best-effort: a phone without a haptic engine rejects, which is nothing to surface. */
-function fire(fn: () => Promise<void>): void {
-  if (!enabled) return;
-  fn().catch(() => {});
-}
-
-/** The capture button was pressed and a clip is starting. */
-export function captureStarted(): void {
-  fire(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium));
-}
-
-/** A screen recording was picked and is on its way to the server. */
-export function recordingPicked(): void {
-  fire(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
-}
-
-/** The server could not be reached; the clip waits in the queue. */
-export function queued(): void {
-  fire(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning));
-}
-
-/** A result is in: a confident match, or only a guess. */
-export function identified(confident: boolean): void {
-  fire(() =>
-    Haptics.notificationAsync(
-      confident ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning,
-    ),
-  );
-}
-
-/** Something was saved for later. */
-export function savedForLater(): void {
-  fire(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
-}
+export const { setHapticsEnabled, captureStarted, recordingPicked, queued, identified, savedForLater } = createFeedback({
+  impact: (style) => Haptics.impactAsync(IMPACT[style]),
+  notification: (kind) => Haptics.notificationAsync(NOTICE[kind]),
+});
