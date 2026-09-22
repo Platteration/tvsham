@@ -66,9 +66,11 @@
       [
         "expo-secure-store",
         {
-          "faceIDPermission": false
+          "faceIDPermission": false,
+          "configureAndroidBackup": false
         }
       ],
+      "./plugins/withBackupRules",
       "./plugins/withCleartextTraffic"
     ],
     "experiments": {

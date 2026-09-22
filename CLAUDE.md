@@ -217,11 +217,22 @@ the `--json` introspect swallows that warning, so neither key may come back.
 `userInterfaceStyle` lives at the top level once and needs `expo-system-ui` to do
 anything on Android; the test proves the module is wired in by the
 `RCTRootViewBackgroundColor` only its plugin writes. `allowBackup` is true on purpose:
-the library and history are the user's own record, and the token is in
-expo-secure-store - whose backup-exclusion rules only reach the manifest because
-`expo-secure-store` is listed in `plugins` (prebuild-config applies a fixed set of
-plugins on its own, and that one is not in it; `faceIDPermission: false` keeps its
-default Face ID string out of the plist). `blockedPermissions` holds exactly one entry,
+the library and history are the user's own record, and `plugins/withBackupRules.js`
+writes the app's own rules - `res/xml/backup_rules.xml` for Android 11 and lower,
+`data_extraction_rules.xml` (cloud backup and device transfer, each its own section)
+for 12 and higher: the `database` domain, where AsyncStorage keeps its `RKStorage`
+SQLite file, and `sharedpref` are included, and expo-secure-store's `SecureStore.xml`
+is excluded, so the token stays on the device (its Android Keystore key never leaves
+it either). They are the app's own because expo-secure-store's plugin writes rules
+that include `sharedpref` alone, and once a rule file has an `<include>` Android
+backs up nothing else - listing that plugin, as 88f9d7e did, excluded the database
+and with it everything the user would miss, while claiming the opposite. The plugin
+stays listed with `configureAndroidBackup: false`, so it neither writes its rules nor
+warns that others are present, and `faceIDPermission: false`, which keeps its default
+Face ID string out of the plist. The mod that writes the files is a dangerous mod,
+which introspect does not run, so the config test drives it against a temp directory
+and parses what it wrote, and reads the two file names out of the modules' own
+sources. `blockedPermissions` holds exactly one entry,
 SYSTEM_ALERT_WINDOW: the template grants it for the dev-menu overlay and its debug
 source set re-declares it, so a dev client loses nothing and a release build stops
 carrying 'display over other apps'. INTERNET is deliberately *not* blocked - this app

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { inflateSync } from "node:zlib";
 
@@ -48,6 +49,24 @@ interface Manifest {
     "uses-permission"?: Array<{ $: Record<string, string> }>;
     application?: Array<{ $: Record<string, string> }>;
   };
+}
+
+/** plugins/withBackupRules.js: the plugin function plus the names it exports for this test. */
+interface BackupRulesPlugin {
+  (config: Record<string, unknown>): {
+    mods: { android: { dangerous: (c: Record<string, unknown>) => Promise<unknown> } };
+  };
+  BACKUP_RULES: string;
+  EXTRACTION_RULES: string;
+  BACKUP_RULES_RESOURCE: string;
+  EXTRACTION_RULES_RESOURCE: string;
+  SECURE_STORE_FILE: string;
+}
+
+/** An element as xml2js hands it back: attributes under $, children grouped by tag. */
+interface XmlElement {
+  $?: Record<string, string>;
+  [tag: string]: unknown;
 }
 
 interface Introspected {
@@ -162,30 +181,81 @@ describe("native posture", () => {
     assert.equal(appJson.expo.web, undefined);
   });
 
-  it("keeps the user's own record in Android backup", () => {
+  it("keeps the user's own record in Android backup, and the token out of it", async () => {
     // allowBackup is explicit and true. The library and history are the
     // user's own record (`tvsham.library.v1` / `tvsham.history.v1` in
     // AsyncStorage, src/store.ts) and losing them on a new phone is the loss
-    // Auto Backup exists to prevent. The one secret, the access token, is not
-    // in that file: it is in expo-secure-store, whose own backup rules
-    // exclude its SharedPreferences file from cloud backup and device
-    // transfer alike - and behind that, the value is AES-encrypted with a key
-    // held in the Android Keystore (AESEncryptor.kt) that never leaves the
-    // device. The "token storage" test below pins the iOS keychain class that
-    // keeps it there too. So backup carries nothing secret and everything the
-    // user would miss.
+    // Auto Backup exists to prevent. The one secret, the access token, is in
+    // expo-secure-store, AES-encrypted under an Android Keystore key that
+    // never leaves the device: a restored copy is ciphertext no other device
+    // can open, so its file is excluded and the token is typed in again on a
+    // new phone - as on iOS, where the "token storage" test pins the keychain
+    // class that keeps it there.
     assert.equal(appJson.expo.android?.allowBackup, true);
     assert.equal(application["android:allowBackup"], "true");
-    // Those rules only reach the manifest when the plugin runs, and unlike
-    // expo-system-ui's it is not one prebuild-config applies on its own: it
-    // has to be listed. Without the entry the merged manifest had neither
-    // attribute, and the token's ciphertext went into every backup.
-    assert.equal(application["android:fullBackupContent"], "@xml/secure_store_backup_rules");
-    assert.equal(application["android:dataExtractionRules"], "@xml/secure_store_data_extraction_rules");
-    // The same plugin writes an NSFaceIDUsageDescription by default; the app
-    // never asks for biometrics, so the option turns that string off.
-    assert.equal(pluginOptions("expo-secure-store").faceIDPermission, false);
+
+    // The rules are the app's own (plugins/withBackupRules.js), not
+    // expo-secure-store's: that plugin's file includes `sharedpref` alone,
+    // and once a rule file has an <include> Android backs up nothing else -
+    // so listing it, as 88f9d7e did, excluded the database and with it the
+    // record this test is named for. It stays listed for its Face ID option
+    // and is told not to write rules, or it warns and skips at prebuild.
+    assert.ok(appJson.expo.plugins?.includes("./plugins/withBackupRules"), "the rules plugin is listed");
+    assert.deepEqual(pluginOptions("expo-secure-store"), { faceIDPermission: false, configureAndroidBackup: false });
     assert.equal(has(infoPlist, "NSFaceIDUsageDescription"), false);
+    const plugin = require("../plugins/withBackupRules.js") as BackupRulesPlugin;
+    assert.equal(plugin.BACKUP_RULES_RESOURCE, "@xml/backup_rules");
+    assert.equal(plugin.EXTRACTION_RULES_RESOURCE, "@xml/data_extraction_rules");
+    assert.equal(application["android:fullBackupContent"], plugin.BACKUP_RULES_RESOURCE);
+    assert.equal(application["android:dataExtractionRules"], plugin.EXTRACTION_RULES_RESOURCE);
+
+    // The two names the rules rest on, read out of the modules' own sources
+    // rather than remembered: AsyncStorage on Android is the RKStorage SQLite
+    // database (the `database` domain), and expo-secure-store's preferences
+    // file is SecureStore.xml. A rename in either module fails here rather
+    // than quietly backing up the token or dropping the library.
+    const asyncStorage = dirname(require.resolve("@react-native-async-storage/async-storage/package.json"));
+    const supplier = readFileSync(
+      join(asyncStorage, "android/src/main/java/com/reactnativecommunity/asyncstorage/ReactDatabaseSupplier.java"),
+      "utf8",
+    );
+    assert.match(supplier, /extends SQLiteOpenHelper/);
+    assert.match(supplier, /DATABASE_NAME = "RKStorage"/);
+    const secureStore = dirname(require.resolve("expo-secure-store/package.json"));
+    const module = readFileSync(join(secureStore, "android/src/main/java/expo/modules/securestore/SecureStoreModule.kt"), "utf8");
+    const prefsName = /SHARED_PREFERENCES_NAME = "([^"]+)"/.exec(module)?.[1];
+    assert.ok(prefsName, "expo-secure-store names its preferences file");
+    assert.equal(plugin.SECURE_STORE_FILE, `${prefsName}.xml`);
+
+    // What the files say. The mod that writes them is a dangerous mod, which
+    // introspection does not run, so it is driven here against a temp dir
+    // and its output parsed: the database and preferences in, the SecureStore
+    // file out, in every section Android reads.
+    const expected = [
+      { rule: "include", domain: "database", path: "." },
+      { rule: "include", domain: "sharedpref", path: "." },
+      { rule: "exclude", domain: "sharedpref", path: "SecureStore.xml" },
+    ];
+    const { XML } = require("expo/config-plugins") as { XML: { parseXMLAsync(xml: string): Promise<unknown> } };
+    const dir = mkdtempSync(join(tmpdir(), "tvsham-prebuild-"));
+    try {
+      const config = plugin({ name: "TVsham", slug: "tvsham" });
+      assert.equal(typeof config.mods.android.dangerous, "function");
+      await config.mods.android.dangerous({ ...config, modRequest: { platformProjectRoot: dir } });
+
+      const backup = (await XML.parseXMLAsync(readFileSync(join(dir, plugin.BACKUP_RULES), "utf8"))) as Record<string, XmlElement>;
+      assert.deepEqual(rulesOf(backup["full-backup-content"]), expected);
+
+      const extraction = (await XML.parseXMLAsync(readFileSync(join(dir, plugin.EXTRACTION_RULES), "utf8"))) as Record<
+        string,
+        XmlElement
+      >;
+      const sections = extraction["data-extraction-rules"];
+      assert.deepEqual(rulesOf(only(sections, "cloud-backup")), expected);
+      assert.deepEqual(rulesOf(only(sections, "device-transfer")), expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("ships network access, because the app uses it", () => {
@@ -319,6 +389,26 @@ describe("native posture", () => {
     assert.ok(transparent > opaque, "the monochrome layer is mostly transparent, as a safe-zone glyph is");
   });
 });
+
+/** The children of one tag; xml2js groups them by tag and keeps document order within it. */
+function children(element: XmlElement | undefined, tag: string): XmlElement[] {
+  return (element?.[tag] as XmlElement[] | undefined) ?? [];
+}
+
+/** The one child of that tag, failing if there is not exactly one. */
+function only(element: XmlElement | undefined, tag: string): XmlElement {
+  const list = children(element, tag);
+  assert.equal(list.length, 1, `exactly one <${tag}>`);
+  return list[0] as XmlElement;
+}
+
+/** Every include and exclude in a section, includes first, as {rule, domain, path}. */
+function rulesOf(section: XmlElement | undefined) {
+  assert.ok(section, "the section exists");
+  return (["include", "exclude"] as const).flatMap((rule) =>
+    children(section, rule).map((r) => ({ rule, domain: r.$?.domain, path: r.$?.path })),
+  );
+}
 
 /** Just enough PNG to read what the generator writes: 8-bit RGBA, unfiltered rows. */
 function decodePng(file: string): { width: number; height: number; rgba: Buffer } {
