@@ -11,7 +11,7 @@
  * TypeError and a blank screen, and because whatever arrived is also persisted,
  * that blank screen survives a restart with no way back inside the app.
  *
- * Settings get `sanitise` for exactly this reason. This is the same idea for
+ * Settings get `cleanSettings` for exactly this reason. This is the same idea for
  * everything else, kept free of React and storage so it can be tested directly.
  */
 import type {

@@ -1,59 +1,114 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ACCENT_NAMES } from "./palette.js";
 import {
+  APPEARANCE_NAMES,
   DEFAULT_SETTINGS,
+  REDUCE_MOTION_NAMES,
   canSendTokenTo,
   cleanServerUrl,
+  cleanSettings,
   isPrivateHost,
-  sanitise,
   serverUrlWarning,
+  shouldReduceMotion,
   type Settings,
 } from "./settings.js";
 
+/** A record as it comes back from storage, read with the defaults in force. */
+const clean = (raw: unknown) => cleanSettings(raw, DEFAULT_SETTINGS);
 /** Settings as they might come back from an older install: anything goes. */
-const stored = (patch: Record<string, unknown>) => ({ ...DEFAULT_SETTINGS, ...patch }) as Settings;
+const stored = (patch: Record<string, unknown>) => ({ ...DEFAULT_SETTINGS, ...patch });
 
 describe("settings validation", () => {
   it("passes sound settings through untouched", () => {
     const s = stored({ serverUrl: "http://host:8787", token: "t", appearance: "light", accent: "forest" });
-    assert.deepEqual(sanitise(s), s);
+    assert.deepEqual(clean(s), s);
+  });
+
+  it("round-trips the defaults and every value of every enum", () => {
+    // A table member the validator does not carry would be dropped on every
+    // launch, silently: the user picks it, the app forgets it. The lists are
+    // literals, not the exported name arrays: those are derived from the very
+    // tables under test, so a member dropped from a table would drop out of
+    // the loop with it and the test would pass over the hole.
+    assert.deepEqual(clean(DEFAULT_SETTINGS), DEFAULT_SETTINGS);
+    for (const appearance of ["system", "light", "dark"] as const) {
+      assert.equal(clean(stored({ appearance })).appearance, appearance);
+    }
+    for (const reduceMotion of ["system", "on", "off"] as const) {
+      assert.equal(clean(stored({ reduceMotion })).reduceMotion, reduceMotion);
+    }
+    for (const accent of ["midnight", "sunset", "forest", "mono"] as const) {
+      assert.equal(clean(stored({ accent })).accent, accent);
+    }
+    for (const haptics of [true, false]) {
+      assert.equal(clean(stored({ haptics })).haptics, haptics);
+    }
+    // ...and the exported name arrays are those same literals, so a screen that
+    // builds its control from them offers exactly what the validator keeps.
+    assert.deepEqual(APPEARANCE_NAMES, ["system", "light", "dark"]);
+    assert.deepEqual(REDUCE_MOTION_NAMES, ["system", "on", "off"]);
+    assert.deepEqual(ACCENT_NAMES, ["midnight", "sunset", "forest", "mono"]);
   });
 
   it("falls back to a known accent", () => {
-    assert.equal(sanitise(stored({ accent: "chartreuse" })).accent, "midnight");
-    assert.equal(sanitise(stored({ accent: undefined })).accent, "midnight");
-    assert.equal(sanitise(stored({ accent: 7 })).accent, "midnight");
+    assert.equal(clean(stored({ accent: "chartreuse" })).accent, "midnight");
+    assert.equal(clean(stored({ accent: undefined })).accent, "midnight");
+    assert.equal(clean(stored({ accent: 7 })).accent, "midnight");
   });
 
   it("falls back to following the system appearance", () => {
-    assert.equal(sanitise(stored({ appearance: "sepia" })).appearance, "system");
-    assert.equal(sanitise(stored({ appearance: null })).appearance, "system");
-    assert.equal(sanitise(stored({ appearance: "dark" })).appearance, "dark");
+    assert.equal(clean(stored({ appearance: "sepia" })).appearance, "system");
+    assert.equal(clean(stored({ appearance: null })).appearance, "system");
+    assert.equal(clean(stored({ appearance: "dark" })).appearance, "dark");
   });
 
-  it("does not take a name off Object.prototype as an accent", () => {
-    // The comment on sanitise() says anything that drives a colour lookup is
-    // checked before it is trusted, and a stored record is an object somebody
-    // else's version of the app wrote. "constructor" and its siblings used to
-    // pass that check and reach the lookup table as a colour that is not one.
+  it("falls back to following the system for reduced motion", () => {
+    assert.equal(clean(stored({ reduceMotion: "always" })).reduceMotion, "system");
+    assert.equal(clean(stored({ reduceMotion: true })).reduceMotion, "system");
+    assert.equal(clean(stored({ reduceMotion: "on" })).reduceMotion, "on");
+  });
+
+  it("takes vibration only as a boolean", () => {
+    for (const bad of ["yes", 1, null, undefined, {}]) {
+      assert.equal(clean(stored({ haptics: bad })).haptics, true, String(bad));
+    }
+    assert.equal(clean(stored({ haptics: false })).haptics, false);
+  });
+
+  it("does not take a name off Object.prototype as any enum value", () => {
+    // A stored record is an object somebody else's version of the app wrote,
+    // and on a shared storage origin possibly no version of it. "constructor"
+    // and its siblings used to pass the accent check and reach the lookup
+    // table as a colour that is not one. Built with JSON.parse, not a literal:
+    // {__proto__: "x"} as a literal sets the prototype, while JSON.parse makes
+    // an own "__proto__" key, which is the case a stored record presents.
     for (const inherited of Object.getOwnPropertyNames(Object.prototype)) {
-      assert.equal(sanitise(stored({ accent: inherited })).accent, "midnight", inherited);
-      assert.deepEqual(
-        sanitise(stored({ unlockedAccents: [inherited, "forest"] })).unlockedAccents,
-        ["forest"],
-        inherited,
+      const name = JSON.stringify(inherited);
+      const raw = JSON.parse(
+        `{"appearance":${name},"accent":${name},"reduceMotion":${name},"unlockedAccents":[${name},"forest"]}`,
       );
+      assert.deepEqual(clean(raw), { ...DEFAULT_SETTINGS, unlockedAccents: ["forest"] }, inherited);
+      assert.equal(clean(JSON.parse(`{"haptics":${name}}`)).haptics, true, inherited);
     }
   });
 
+  it("refuses an object where a string is expected rather than coercing it", () => {
+    // Used as a property key, an object is coerced through its own toString,
+    // which a stored record can make throw.
+    const hostile = JSON.parse('{"toString":"x"}');
+    const s = clean({ appearance: hostile, accent: hostile, reduceMotion: hostile, unlockedAccents: [hostile] });
+    assert.deepEqual(s, DEFAULT_SETTINGS);
+  });
+
   it("keeps only accent packs it recognises, and never leaves the user with none", () => {
-    assert.deepEqual(sanitise(stored({ unlockedAccents: ["forest", "chartreuse"] })).unlockedAccents, ["forest"]);
-    assert.deepEqual(sanitise(stored({ unlockedAccents: [] })).unlockedAccents, DEFAULT_SETTINGS.unlockedAccents);
-    assert.deepEqual(sanitise(stored({ unlockedAccents: "all" })).unlockedAccents, DEFAULT_SETTINGS.unlockedAccents);
+    assert.deepEqual(clean(stored({ unlockedAccents: ["forest", "chartreuse"] })).unlockedAccents, ["forest"]);
+    assert.deepEqual(clean(stored({ unlockedAccents: [] })).unlockedAccents, DEFAULT_SETTINGS.unlockedAccents);
+    assert.deepEqual(clean(stored({ unlockedAccents: "all" })).unlockedAccents, DEFAULT_SETTINGS.unlockedAccents);
   });
 
   it("coerces non-string server details to empty rather than crashing later", () => {
-    const s = sanitise(stored({ serverUrl: 42, token: null }));
+    const s = clean(stored({ serverUrl: 42, token: null }));
     assert.equal(s.serverUrl, "");
     assert.equal(s.token, "");
   });
@@ -62,15 +117,51 @@ describe("settings validation", () => {
     // Everything the app records goes to this address and everything it renders
     // comes back from it, so a stored value that is not http(s) is dropped
     // rather than handed to fetch.
-    assert.equal(sanitise(stored({ serverUrl: "https://tv.example.com" })).serverUrl, "https://tv.example.com");
-    assert.equal(sanitise(stored({ serverUrl: "  http://192.168.1.20:8787/  " })).serverUrl, "http://192.168.1.20:8787");
+    assert.equal(clean(stored({ serverUrl: "https://tv.example.com" })).serverUrl, "https://tv.example.com");
+    assert.equal(clean(stored({ serverUrl: "  http://192.168.1.20:8787/  " })).serverUrl, "http://192.168.1.20:8787");
     for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "tvsham://x", "192.168.1.20:8787", "not a url", "http://"]) {
-      assert.equal(sanitise(stored({ serverUrl: bad })).serverUrl, "", `${bad} must not be kept`);
+      assert.equal(clean(stored({ serverUrl: bad })).serverUrl, "", `${bad} must not be kept`);
     }
   });
 
-  it("survives a completely empty object", () => {
-    assert.deepEqual(sanitise({} as Settings), DEFAULT_SETTINGS);
+  it("survives a completely empty object, and anything that is not one", () => {
+    assert.deepEqual(clean({}), DEFAULT_SETTINGS);
+    for (const notARecord of [null, undefined, "settings", 3, [], true]) {
+      assert.deepEqual(clean(notARecord), DEFAULT_SETTINGS, String(notARecord));
+    }
+  });
+
+  it("falls back field by field to the settings in force, never to a constant", () => {
+    // The fallback is what the app is running with: the defaults at launch,
+    // the previous settings on an update. One bad field costs one field.
+    const inForce: Settings = {
+      serverUrl: "http://192.168.1.20:8787",
+      token: "secret",
+      appearance: "dark",
+      accent: "forest",
+      unlockedAccents: ["midnight", "forest"],
+      haptics: false,
+      reduceMotion: "on",
+    };
+    assert.deepEqual(cleanSettings({}, inForce), inForce, "an empty record changes nothing");
+    assert.deepEqual(
+      cleanSettings({ appearance: "sepia", accent: 7, haptics: "no", reduceMotion: [] }, inForce),
+      inForce,
+      "a bad field keeps the value in force",
+    );
+    const one = cleanSettings({ appearance: "light" }, inForce);
+    assert.deepEqual(one, { ...inForce, appearance: "light" }, "a good field replaces only itself");
+    // The list is copied, not shared, so a later write cannot reach back.
+    assert.notEqual(cleanSettings({}, inForce).unlockedAccents, inForce.unlockedAccents);
+  });
+});
+
+describe("reduced motion", () => {
+  it("is the setting when pinned, and the phone's answer when following the system", () => {
+    assert.equal(shouldReduceMotion("on", false), true);
+    assert.equal(shouldReduceMotion("off", true), false);
+    assert.equal(shouldReduceMotion("system", true), true);
+    assert.equal(shouldReduceMotion("system", false), false);
   });
 });
 
@@ -124,4 +215,3 @@ describe("server address trust", () => {
     assert.equal(cleanServerUrl({ toString: () => "http://x" }), "");
   });
 });
-

@@ -4,7 +4,7 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
-import { DEFAULT_SETTINGS, cleanServerUrl, sanitise, type Settings } from "./settings";
+import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, type Settings } from "./settings";
 import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
@@ -29,20 +29,9 @@ function createStore<T>(initial: T) {
 
 /* --------------------------------- settings -------------------------------- */
 
-
-
-const SETTINGS_KEY = "tvsham.settings.v1";
-const LIBRARY_KEY = "tvsham.library.v1";
-const HISTORY_KEY = "tvsham.history.v1";
-const DEVICE_KEY = "tvsham.device.v1";
 /**
- * The server token is a shared secret for a paid service, so it lives in the
- * keychain rather than AsyncStorage, which is a plain file that device backups
- * include. Everything else is preferences and stays where it is.
- */
-const TOKEN_KEY = "tvsham.token.v1";
-/**
- * ...and the keychain's own default, WHEN_UNLOCKED, is itself included in an
+ * The token lives in the keychain (`KEYS.token`, see settings.ts for why), and
+ * the keychain's own default, WHEN_UNLOCKED, is itself included in an
  * encrypted backup and restored onto whatever device that backup is put on,
  * which is the half of the problem the move was meant to solve. The
  * THIS_DEVICE_ONLY class is the one that stays here. Nothing is lost by it:
@@ -99,16 +88,19 @@ export function hydrate(): Promise<void> {
   if (hydrating) return hydrating;
   hydrating = (async () => {
     try {
-      const [s, l, h, d] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY, HISTORY_KEY, DEVICE_KEY]);
+      const [s, l, h, d] = await AsyncStorage.multiGet([KEYS.settings, KEYS.library, KEYS.history, KEYS.device]);
       deviceId = d?.[1] ?? "";
       if (!deviceId) {
         deviceId = newDeviceId();
-        await AsyncStorage.setItem(DEVICE_KEY, deviceId);
+        await AsyncStorage.setItem(KEYS.device, deviceId);
       }
-      const savedSettings = readJson(s?.[1]) as Partial<Settings> | null;
-      const { token, migrated } = await readToken(savedSettings?.token);
+      const savedSettings = readJson(s?.[1]);
+      const legacyToken = (savedSettings as { token?: unknown } | null)?.token;
+      const { token, migrated } = await readToken(typeof legacyToken === "string" ? legacyToken : undefined);
       if (savedSettings || token) {
-        settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings, token }));
+        // Field by field against what is in force: a record from another build
+        // (or, on a shared origin, another app) costs at most the fields it got wrong.
+        settingsStore.set((prev) => cleanSettings({ ...(savedSettings as object | null), token }, prev));
       }
       // Finish the migration now rather than whenever the user next happens to
       // change a setting: until this record is rewritten the token is still
@@ -149,11 +141,11 @@ function readJson(raw: string | null | undefined): unknown {
 /** The settings record, always written without the token: that lives in the keychain. */
 async function persistSettings(): Promise<void> {
   const { token: _token, ...rest } = settingsStore.get();
-  await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...rest, token: "" }));
+  await AsyncStorage.setItem(KEYS.settings, JSON.stringify({ ...rest, token: "" }));
 }
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
+  settingsStore.set((prev) => cleanSettings({ ...prev, ...patch }, prev));
   await Promise.all([persistSettings(), writeToken(settingsStore.get().token)]);
 }
 
@@ -164,10 +156,10 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
  */
 async function readToken(legacy: string | undefined): Promise<{ token: string; migrated: boolean }> {
   try {
-    const stored = await SecureStore.getItemAsync(TOKEN_KEY);
+    const stored = await SecureStore.getItemAsync(KEYS.token);
     if (stored) return { token: stored, migrated: false };
     if (legacy) {
-      await SecureStore.setItemAsync(TOKEN_KEY, legacy, TOKEN_OPTIONS);
+      await SecureStore.setItemAsync(KEYS.token, legacy, TOKEN_OPTIONS);
       return { token: legacy, migrated: true };
     }
   } catch (err) {
@@ -180,8 +172,8 @@ async function readToken(legacy: string | undefined): Promise<{ token: string; m
 
 async function writeToken(token: string): Promise<void> {
   try {
-    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token, TOKEN_OPTIONS);
-    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+    if (token) await SecureStore.setItemAsync(KEYS.token, token, TOKEN_OPTIONS);
+    else await SecureStore.deleteItemAsync(KEYS.token);
   } catch (err) {
     console.warn("[store] could not save the token securely", err);
   }
@@ -198,7 +190,7 @@ export function useLibrary(): SavedItem[] {
 }
 
 async function persistLibrary(): Promise<void> {
-  await AsyncStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryStore.get()));
+  await AsyncStorage.setItem(KEYS.library, JSON.stringify(libraryStore.get()));
 }
 
 export function isSaved(result: RecognitionResult): boolean {
@@ -246,12 +238,12 @@ async function recordHistory(result: RecognitionResult, source: CaptureSource): 
   const item = toSavedItem(result, source);
   if (!item || item.identification.kind === "unknown") return;
   historyStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)].slice(0, HISTORY_LIMIT));
-  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore.get()));
+  await AsyncStorage.setItem(KEYS.history, JSON.stringify(historyStore.get()));
 }
 
 export async function clearHistory(): Promise<void> {
   historyStore.set([]);
-  await AsyncStorage.removeItem(HISTORY_KEY);
+  await AsyncStorage.removeItem(KEYS.history);
 }
 
 /** Promote a history entry to the saved library. */
