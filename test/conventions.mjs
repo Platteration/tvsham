@@ -109,13 +109,42 @@ const tsc = () => createRequire(join(root, 'package.json')).resolve('typescript/
 // holding its root files relative to the config's own directory.
 const showConfig = (config) =>
   JSON.parse(execFileSync(process.execPath, [tsc(), '--showConfig', '-p', config], { cwd: root, encoding: 'utf8' }));
+const tsconfigs = () => tracked().filter((f) => /(^|\/)tsconfig(\.[^/]+)?\.json$/.test(f));
+// The projects a script runs tsc over in every tracked package.json: each `-p`/`--project`
+// the script names, or the package's tsconfig.json when it names none.
+const projectsOf = (name) =>
+  tracked()
+    .filter((f) => f === 'package.json' || f.endsWith('/package.json'))
+    .flatMap((manifest) => {
+      const script = JSON.parse(read(manifest)).scripts?.[name] ?? '';
+      if (!/\btsc\b/.test(script)) return [];
+      const named = [...script.matchAll(/(?:^|\s)(?:-p|--project)[\s=]+(\S+)/g)].map((m) => m[1]);
+      return (named.length > 0 ? named : ['tsconfig.json']).map((project) => join(dirname(manifest), project));
+    });
 
 // Every tsconfig the repository tracks (tsconfig.json and tsconfig.<name>.json), so a flag
 // set in a base file counts and one set nowhere does not.
 test('noUncheckedIndexedAccess in every TypeScript project', () => {
-  const configs = tracked().filter((f) => /(^|\/)tsconfig(\.[^/]+)?\.json$/.test(f));
-  for (const f of configs) {
+  for (const f of tsconfigs()) {
     assert.equal(showConfig(f).compilerOptions?.noUncheckedIndexedAccess, true, `${f} sets noUncheckedIndexedAccess`);
+  }
+});
+
+// CONVENTIONS.md's tsconfig sentence: an Expo config extends expo/tsconfig.base with
+// `strict`; a hand-written one states `strict`, `target: ES2022`, `skipLibCheck`,
+// `esModuleInterop` and `noEmit`, except that the config a `build` script compiles with
+// has to emit (the server's, which builds dist).
+test('the tsconfig options', () => {
+  const emitting = new Set(projectsOf('build'));
+  for (const f of tsconfigs()) {
+    const options = showConfig(f).compilerOptions ?? {};
+    assert.equal(options.strict, true, `${f} sets strict`);
+    if (/"extends"\s*:\s*"expo\/tsconfig\.base(\.json)?"/.test(read(f))) continue;
+    assert.equal(String(options.target).toLowerCase(), 'es2022', `${f} targets ES2022`);
+    assert.equal(options.skipLibCheck, true, `${f} sets skipLibCheck`);
+    assert.equal(options.esModuleInterop, true, `${f} sets esModuleInterop`);
+    if (emitting.has(f)) assert.notEqual(options.noEmit, true, `${f} is what a build script compiles with`);
+    else assert.equal(options.noEmit, true, `${f} sets noEmit`);
   }
 });
 
@@ -129,15 +158,9 @@ test('every tracked TypeScript file is type-checked', () => {
   const sources = files.filter((f) => /\.(ts|tsx|mts|cts)$/.test(f));
   if (sources.length === 0) return;
   const checked = new Set();
-  for (const manifest of files.filter((f) => f === 'package.json' || f.endsWith('/package.json'))) {
-    const script = JSON.parse(read(manifest)).scripts?.typecheck ?? '';
-    if (!/\btsc\b/.test(script)) continue;
-    const named = [...script.matchAll(/(?:^|\s)(?:-p|--project)[\s=]+(\S+)/g)].map((m) => m[1]);
-    for (const project of named.length > 0 ? named : ['tsconfig.json']) {
-      const config = join(dirname(manifest), project);
-      const base = config.endsWith('.json') ? dirname(config) : config;
-      for (const f of showConfig(config).files ?? []) checked.add(join(base, f));
-    }
+  for (const config of projectsOf('typecheck')) {
+    const base = config.endsWith('.json') ? dirname(config) : config;
+    for (const f of showConfig(config).files ?? []) checked.add(join(base, f));
   }
   assert.deepEqual(sources.filter((f) => !checked.has(f)), [], 'files no typecheck script reaches');
 });

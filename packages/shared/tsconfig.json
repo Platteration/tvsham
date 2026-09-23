@@ -6,7 +6,8 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "esModuleInterop": true
   },
   "include": ["src"]
 }
