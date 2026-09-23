@@ -184,7 +184,7 @@ the pure layer: the record-and-upload loop against injected fakes, settings vali
 result formatting, the offline-queue drop policy, and a contrast audit that holds every text pairing in both schemes and all four accents to
 WCAG AA.
 
-CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test and a Metro bundle of the app, and a Docker build of the server in a second job.
+CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test and a Metro bundle of the app, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
 
 ## Project layout
 
