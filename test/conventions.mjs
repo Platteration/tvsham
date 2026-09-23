@@ -61,8 +61,43 @@ test('the CI workflow shape', () => {
   assert.match(ci, /npm run test:conventions/);
   for (const s of ['lint', 'typecheck']) if (scripts[s]) assert.match(ci, new RegExp(`npm run ${s}\\b`), `CI runs ${s}`);
   assert.equal(/npm audit --omit=dev --audit-level=high/.test(ci), lockfile, 'the audit runs exactly when there is a lockfile');
-  if (lockfile) assert.match(ci, /^ {2}audit:$/m, 'the audit is a job of its own');
+  if (lockfile) {
+    assert.match(ci, /^ {2}audit:$/m, 'the audit is a job of its own');
+    // The job line for line, so that it can fail: a line anywhere else in the file cannot
+    // stand in for one missing here, and `|| true`, `continue-on-error`, `if:`, an install
+    // step or a commented-out audit is a line the job does not have.
+    const job = jobLines(ci, 'audit');
+    const shape = [
+      /^ {4}runs-on: \S+$/,
+      /^ {4}timeout-minutes: [1-9]\d*$/,
+      /^ {4}steps:$/,
+      /^ {6}- uses: actions\/checkout@[0-9a-f]{40} # v\d+$/,
+      /^ {6}- uses: actions\/setup-node@[0-9a-f]{40} # v\d+$/,
+      /^ {8}with:$/,
+      /^ {10}node-version-file: \.nvmrc$/,
+      /^ {6}- run: npm audit --omit=dev --audit-level=high$/,
+    ];
+    const wrong = job.findIndex((line, i) => !shape[i]?.test(line));
+    assert.ok(wrong < 0 && job.length === shape.length, `the audit job is runs-on, a timeout, checkout, setup-node from .nvmrc and the audit, and nothing else; ${wrong < 0 ? `it has ${job.length} lines of ${shape.length}` : `line ${wrong + 1} is ${JSON.stringify(job[wrong])}`}`);
+    const runs = ci.split('\n').filter((line) => /\bnpm audit\b/.test(line) && !/^\s*#/.test(line));
+    assert.equal(runs.length, 1, 'npm audit runs in the audit job and nowhere else, so check means what it always meant');
+  }
 });
+
+// The lines of one job under `jobs:`, without blank lines and comments: from its `  name:`
+// line to the next key at two spaces or less. A comment at any indent does not end it,
+// since YAML reads the keys after one as the same job's.
+function jobLines(ci, name) {
+  const lines = ci.split('\n');
+  const start = lines.indexOf(`  ${name}:`);
+  const out = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*(#|$)/.test(line)) continue;
+    if (/^ {0,2}\S/.test(line)) break;
+    out.push(line);
+  }
+  return out;
+}
 
 // Every tsconfig.json the repository tracks, resolved the way tsc resolves it (extends,
 // comments and all), so a flag set in a base file counts and one set nowhere does not.
