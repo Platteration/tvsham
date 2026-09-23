@@ -1,6 +1,10 @@
 // The conventions shared by every platteration repository (see CONVENTIONS.md), pinned
-// so that a session cannot quietly re-decide them. Zero dependencies, node:test only,
-// and deliberately named so no other runner's glob picks it up.
+// so that a session cannot quietly re-decide them. node:test only, and deliberately named
+// so no other runner's glob picks it up. It imports nothing outside Node, but the
+// TypeScript tests need a git checkout (they list the tracked files) and the installed
+// tree: typescript from node_modules, and expo for a config that extends
+// expo/tsconfig.base. Without them those tests fail rather than skip, since a skipped
+// check reads as a passed one: run `npm ci` first.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -99,18 +103,43 @@ function jobLines(ci, name) {
   return out;
 }
 
-// Every tsconfig.json the repository tracks, resolved the way tsc resolves it (extends,
-// comments and all), so a flag set in a base file counts and one set nowhere does not.
+const tracked = () => execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0');
+const tsc = () => createRequire(join(root, 'package.json')).resolve('typescript/bin/tsc');
+// A tsconfig resolved the way tsc resolves it (extends, comments and all), with `files`
+// holding its root files relative to the config's own directory.
+const showConfig = (config) =>
+  JSON.parse(execFileSync(process.execPath, [tsc(), '--showConfig', '-p', config], { cwd: root, encoding: 'utf8' }));
+
+// Every tsconfig the repository tracks (tsconfig.json and tsconfig.<name>.json), so a flag
+// set in a base file counts and one set nowhere does not.
 test('noUncheckedIndexedAccess in every TypeScript project', () => {
-  const configs = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' })
-    .split('\0')
-    .filter((f) => f === 'tsconfig.json' || f.endsWith('/tsconfig.json'));
-  if (configs.length === 0) return;
-  const tsc = createRequire(join(root, 'package.json')).resolve('typescript/bin/tsc');
+  const configs = tracked().filter((f) => /(^|\/)tsconfig(\.[^/]+)?\.json$/.test(f));
   for (const f of configs) {
-    const shown = JSON.parse(execFileSync(process.execPath, [tsc, '--showConfig', '-p', f], { cwd: root, encoding: 'utf8' }));
-    assert.equal(shown.compilerOptions?.noUncheckedIndexedAccess, true, `${f} sets noUncheckedIndexedAccess`);
+    assert.equal(showConfig(f).compilerOptions?.noUncheckedIndexedAccess, true, `${f} sets noUncheckedIndexedAccess`);
   }
+});
+
+// A flag reaches only the files its project includes. Every TypeScript file the repository
+// tracks is a root file of a project that some package's `typecheck` script runs tsc over
+// (each `-p`/`--project` it names, or the package's tsconfig.json when it names none). A
+// test file that the build config leaves out, and that tsx runs with its types stripped,
+// is otherwise type-checked by nothing, whatever the tsconfig beside it says.
+test('every tracked TypeScript file is type-checked', () => {
+  const files = tracked();
+  const sources = files.filter((f) => /\.(ts|tsx|mts|cts)$/.test(f));
+  if (sources.length === 0) return;
+  const checked = new Set();
+  for (const manifest of files.filter((f) => f === 'package.json' || f.endsWith('/package.json'))) {
+    const script = JSON.parse(read(manifest)).scripts?.typecheck ?? '';
+    if (!/\btsc\b/.test(script)) continue;
+    const named = [...script.matchAll(/(?:^|\s)(?:-p|--project)[\s=]+(\S+)/g)].map((m) => m[1]);
+    for (const project of named.length > 0 ? named : ['tsconfig.json']) {
+      const config = join(dirname(manifest), project);
+      const base = config.endsWith('.json') ? dirname(config) : config;
+      for (const f of showConfig(config).files ?? []) checked.add(join(base, f));
+    }
+  }
+  assert.deepEqual(sources.filter((f) => !checked.has(f)), [], 'files no typecheck script reaches');
 });
 
 test('the documents', () => {

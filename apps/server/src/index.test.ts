@@ -780,7 +780,7 @@ describe("limits", () => {
         }),
         duplex: "half",
       } as RequestInit);
-    const settled = <T>(p: Promise<T>) =>
+    const settled = <T>(p: T | Promise<T>) =>
       Promise.race([p, new Promise<"waiting">((r) => setTimeout(() => r("waiting"), 150))]);
     try {
       const held = [send(attacker, "198.51.100.7"), send(attacker, "198.51.100.7")];
