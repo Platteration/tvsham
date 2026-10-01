@@ -4,7 +4,9 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
-import { DEFAULT_SETTINGS, sanitise, type Settings } from "./settings";
+import { setHapticsEnabled } from "./feedback";
+import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, hydrateSettings, resetPreferences, type Settings } from "./settings";
+import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
 
@@ -28,30 +30,37 @@ function createStore<T>(initial: T) {
 
 /* --------------------------------- settings -------------------------------- */
 
-
-
-const SETTINGS_KEY = "tvsham.settings.v1";
-const LIBRARY_KEY = "tvsham.library.v1";
-const HISTORY_KEY = "tvsham.history.v1";
-const DEVICE_KEY = "tvsham.device.v1";
 /**
- * The server token is a shared secret for a paid service, so it lives in the
- * keychain rather than AsyncStorage, which is a plain file that device backups
- * include. Everything else is preferences and stays where it is.
+ * The token lives in the keychain (`KEYS.token`, see settings.ts for why), and
+ * the keychain's own default, WHEN_UNLOCKED, is itself included in an
+ * encrypted backup and restored onto whatever device that backup is put on,
+ * which is the half of the problem the move was meant to solve. The
+ * THIS_DEVICE_ONLY class is the one that stays here. Nothing is lost by it:
+ * the token is typed into Settings again on a new device either way.
  */
-const TOKEN_KEY = "tvsham.token.v1";
+const TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
-/** In development, guess the server is on the same machine as the Metro bundler. */
+/**
+ * In development, guess the server is on the same machine as the Metro bundler.
+ * Checked like any other server address: a default is still something the app
+ * would post video and a token to.
+ */
 function defaultServerUrl(): string {
   const configured = (Constants.expoConfig?.extra as { serverUrl?: string } | undefined)?.serverUrl;
-  if (configured) return configured;
+  if (configured) return cleanServerUrl(configured);
   const host = Constants.expoConfig?.hostUri?.split(":")[0];
-  return host ? `http://${host}:8787` : "";
+  return host ? cleanServerUrl(`http://${host}:8787`) : "";
 }
 
 const settingsStore = createStore<Settings>({ ...DEFAULT_SETTINGS, serverUrl: defaultServerUrl() });
+// The Vibration setting gates every haptic through a module flag rather than a
+// hook, so the first tap after hydration already obeys it.
+settingsStore.subscribe(() => setHapticsEnabled(settingsStore.get().haptics));
+setHapticsEnabled(settingsStore.get().haptics);
 const libraryStore = createStore<SavedItem[]>([]);
 const historyStore = createStore<SavedItem[]>([]);
 const hydrated = createStore<boolean>(false);
@@ -84,21 +93,29 @@ export function hydrate(): Promise<void> {
   if (hydrating) return hydrating;
   hydrating = (async () => {
     try {
-      const [s, l, h, d] = await AsyncStorage.multiGet([SETTINGS_KEY, LIBRARY_KEY, HISTORY_KEY, DEVICE_KEY]);
+      const [s, l, h, d] = await AsyncStorage.multiGet([KEYS.settings, KEYS.library, KEYS.history, KEYS.device]);
       deviceId = d?.[1] ?? "";
       if (!deviceId) {
         deviceId = newDeviceId();
-        await AsyncStorage.setItem(DEVICE_KEY, deviceId);
+        await AsyncStorage.setItem(KEYS.device, deviceId);
       }
-      const savedSettings = s?.[1] ? (JSON.parse(s[1]) as Partial<Settings>) : null;
-      const token = await readToken(savedSettings?.token);
+      const savedSettings = readJson(s?.[1]);
+      const legacyToken = (savedSettings as { token?: unknown } | null)?.token;
+      const { token, migrated } = await readToken(typeof legacyToken === "string" ? legacyToken : undefined);
       if (savedSettings || token) {
-        settingsStore.set((prev) => sanitise({ ...prev, ...savedSettings, token }));
+        // Field by field against what is in force: a record from another build
+        // (or, on a shared origin, another app) costs at most the fields it got wrong.
+        settingsStore.set((prev) => hydrateSettings(savedSettings, token, prev));
       }
-      const savedLibrary = l?.[1] ? (JSON.parse(l[1]) as SavedItem[]) : null;
-      if (Array.isArray(savedLibrary)) libraryStore.set(savedLibrary);
-      const savedHistory = h?.[1] ? (JSON.parse(h[1]) as SavedItem[]) : null;
-      if (Array.isArray(savedHistory)) historyStore.set(savedHistory);
+      // Finish the migration now rather than whenever the user next happens to
+      // change a setting: until this record is rewritten the token is still
+      // sitting in the plain file the keychain copy exists to get it out of.
+      if (migrated) await persistSettings();
+      // Coerced, not cast: an older or half-written record must not reach the
+      // screens. The whole of the library is kept — it is the user's own list
+      // and nothing else caps it, so a ceiling here would delete saved items.
+      if (l?.[1]) libraryStore.set(readSavedItems(l[1]));
+      if (h?.[1]) historyStore.set(readSavedItems(h[1]));
     } catch (err) {
       console.warn("[store] failed to hydrate", err);
     } finally {
@@ -116,36 +133,58 @@ export function useSettings(): Settings {
   return useSyncExternalStore(settingsStore.subscribe, settingsStore.get, settingsStore.get);
 }
 
-export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  settingsStore.set((prev) => sanitise({ ...prev, ...patch }));
-  const { token, ...rest } = settingsStore.get();
-  await Promise.all([
-    AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...rest, token: "" })),
-    writeToken(token),
-  ]);
+/** Stored JSON, or null: a corrupt record must not take the rest of hydrate down with it. */
+function readJson(raw: string | null | undefined): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
-/** Read the token from the keychain, migrating one left in AsyncStorage by an older build. */
-async function readToken(legacy: string | undefined): Promise<string> {
+/** The settings record, always written without the token: that lives in the keychain. */
+async function persistSettings(): Promise<void> {
+  const { token: _token, ...rest } = settingsStore.get();
+  await AsyncStorage.setItem(KEYS.settings, JSON.stringify({ ...rest, token: "" }));
+}
+
+export async function updateSettings(patch: Partial<Settings>): Promise<void> {
+  settingsStore.set((prev) => cleanSettings({ ...prev, ...patch }, prev));
+  await Promise.all([persistSettings(), writeToken(settingsStore.get().token)]);
+}
+
+/** Reset to defaults: the preference fields only (`PREFERENCE_FIELDS`); the token is untouched, so the keychain is too. */
+export async function resetSettings(): Promise<void> {
+  settingsStore.set(resetPreferences);
+  await persistSettings();
+}
+
+/**
+ * Read the token from the keychain, migrating one left in AsyncStorage by an
+ * older build. `migrated` says the keychain now has its own copy, and only
+ * then: a device whose keychain refused the write still needs the old one.
+ */
+async function readToken(legacy: string | undefined): Promise<{ token: string; migrated: boolean }> {
   try {
-    const stored = await SecureStore.getItemAsync(TOKEN_KEY);
-    if (stored) return stored;
+    const stored = await SecureStore.getItemAsync(KEYS.token);
+    if (stored) return { token: stored, migrated: false };
     if (legacy) {
-      await SecureStore.setItemAsync(TOKEN_KEY, legacy);
-      return legacy;
+      await SecureStore.setItemAsync(KEYS.token, legacy, TOKEN_OPTIONS);
+      return { token: legacy, migrated: true };
     }
   } catch (err) {
     // A device without a usable keychain still gets a working app.
     console.warn("[store] secure storage unavailable", err);
-    return legacy ?? "";
+    return { token: legacy ?? "", migrated: false };
   }
-  return "";
+  return { token: "", migrated: false };
 }
 
 async function writeToken(token: string): Promise<void> {
   try {
-    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
-    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+    if (token) await SecureStore.setItemAsync(KEYS.token, token, TOKEN_OPTIONS);
+    else await SecureStore.deleteItemAsync(KEYS.token);
   } catch (err) {
     console.warn("[store] could not save the token securely", err);
   }
@@ -162,7 +201,7 @@ export function useLibrary(): SavedItem[] {
 }
 
 async function persistLibrary(): Promise<void> {
-  await AsyncStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryStore.get()));
+  await AsyncStorage.setItem(KEYS.library, JSON.stringify(libraryStore.get()));
 }
 
 export function isSaved(result: RecognitionResult): boolean {
@@ -210,12 +249,12 @@ async function recordHistory(result: RecognitionResult, source: CaptureSource): 
   const item = toSavedItem(result, source);
   if (!item || item.identification.kind === "unknown") return;
   historyStore.set((prev) => [item, ...prev.filter((i) => i.id !== item.id)].slice(0, HISTORY_LIMIT));
-  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore.get()));
+  await AsyncStorage.setItem(KEYS.history, JSON.stringify(historyStore.get()));
 }
 
 export async function clearHistory(): Promise<void> {
   historyStore.set([]);
-  await AsyncStorage.removeItem(HISTORY_KEY);
+  await AsyncStorage.removeItem(KEYS.history);
 }
 
 /** Promote a history entry to the saved library. */

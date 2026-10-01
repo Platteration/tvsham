@@ -1,5 +1,4 @@
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
-import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useKeepAwake } from "expo-keep-awake";
 import { Link, useRouter } from "expo-router";
@@ -7,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, MAX_HINT_LENGTH, type CaptureSource } from "@tvsham/shared";
+import { captureStarted, identified, queued, recordingPicked } from "@/feedback";
 import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
@@ -57,15 +57,11 @@ export default function CaptureScreen() {
 
   useEffect(() => {
     if (state.phase === "queued") {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      queued();
       reset();
     }
     if (state.phase === "done" && state.result) {
-      void Haptics.notificationAsync(
-        state.result.status === "identified"
-          ? Haptics.NotificationFeedbackType.Success
-          : Haptics.NotificationFeedbackType.Warning,
-      );
+      identified(state.result.status === "identified");
       router.push("/result");
       reset();
     }
@@ -224,7 +220,7 @@ function CameraMode({ state, start, cancel, hint }: ModeProps) {
       cancel();
       return;
     }
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    captureStarted();
     void start("camera", producer, { hints: hint.trim() || undefined });
   };
 
@@ -288,7 +284,7 @@ function ScreenMode({ state, start, cancel, hint }: ModeProps) {
     });
     if (res.canceled || !res.assets[0]) return;
     const asset = res.assets[0];
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    recordingPicked();
     const producer: ClipProducer = {
       record: async () => asset.uri,
     };

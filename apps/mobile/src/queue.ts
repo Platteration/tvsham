@@ -1,9 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import { isHopeless } from "./queue-policy";
+import { KEYS } from "./settings";
+import { cleanQueuedClips } from "./shapes";
 import { setLastResult } from "./store";
 
 /**
@@ -22,7 +24,6 @@ export interface QueuedClip {
   reason: string;
 }
 
-const QUEUE_KEY = "tvsham.queue.v1";
 const QUEUE_DIR = "pending-clips";
 /** Beyond this the queue is more of a disk leak than a feature. */
 const MAX_QUEUED = 10;
@@ -36,7 +37,7 @@ function emit(): void {
 }
 
 async function persist(): Promise<void> {
-  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  await AsyncStorage.setItem(KEYS.queue, JSON.stringify(queue));
   emit();
 }
 
@@ -48,12 +49,14 @@ function pendingDir(): Directory {
 
 export async function loadQueue(): Promise<void> {
   try {
-    const raw = await AsyncStorage.getItem(QUEUE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as QueuedClip[]) : [];
+    const raw = await AsyncStorage.getItem(KEYS.queue);
+    // Coerced, not cast: runFlush walks this list unattended on every
+    // foreground event and hands each entry's uri and source to the server.
+    const parsed = cleanQueuedClips(raw ? JSON.parse(raw) : []);
     // Drop anything whose file the OS reclaimed while we were away.
-    queue = Array.isArray(parsed) ? parsed.filter((c) => fileExists(c.uri)) : [];
+    queue = parsed.filter((c) => fileExists(c.uri));
     emit();
-    if (Array.isArray(parsed) && parsed.length !== queue.length) await persist();
+    if (parsed.length !== queue.length) await persist();
   } catch {
     queue = [];
   }
@@ -118,7 +121,8 @@ export async function enqueue(
   }
 }
 
-function discardFile(uri: string): void {
+/** Delete a recording nothing refers to any more. Exported for the identification loop. */
+export function discardFile(uri: string): void {
   try {
     const f = new File(uri);
     if (f.exists) f.delete();
@@ -176,10 +180,10 @@ async function runFlush(): Promise<FlushOutcome> {
       await remove(item.id);
       continue;
     }
-    let sessionId: string | null = null;
+    let session: SessionHandle | null = null;
     try {
-      sessionId = await createSession(item.source, item.hint);
-      const result = await uploadClip(sessionId, item.uri, { clipKey: item.id });
+      session = await createSession(item.source, item.hint);
+      const result = await uploadClip(session, item.uri, { clipKey: item.id });
       outcome.last = result;
       // The clip was analysed, so it is spent whatever the answer was.
       setLastResult({ result, source: item.source });
@@ -189,7 +193,7 @@ async function runFlush(): Promise<FlushOutcome> {
       outcome.failed++;
       if (err instanceof ApiError && isHopeless(err.status)) await remove(item.id);
     } finally {
-      if (sessionId) void endSession(sessionId);
+      if (session) void endSession(session);
     }
   }
   return outcome;

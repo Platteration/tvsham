@@ -142,7 +142,7 @@ describe("cheap first pass", () => {
     setFirst("claude-sonnet-5");
     const { client, calls } = fakeClient({
       createResponses: [ok, ok],
-      parsed: (n) => ({ ...parsed, confidence: n === 1 ? 0.4 : 0.95 }),
+      parsed: (n: number) => ({ ...parsed, confidence: n === 1 ? 0.4 : 0.95 }),
     });
     setClientForTests(client);
     const id = await recogniseWithEscalation(evidence());
@@ -154,7 +154,7 @@ describe("cheap first pass", () => {
     setFirst("claude-sonnet-5");
     const { client } = fakeClient({
       createResponses: [ok, ok],
-      parsed: (n) => ({ ...parsed, confidence: n === 1 ? 0.5 : 0.2 }),
+      parsed: (n: number) => ({ ...parsed, confidence: n === 1 ? 0.5 : 0.2 }),
     });
     setClientForTests(client);
     assert.equal((await recogniseWithEscalation(evidence())).confidence, 0.5);

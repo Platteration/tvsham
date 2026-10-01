@@ -1,8 +1,8 @@
-import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import { Image, Pressable, ScrollView, View } from "react-native";
+import { savedForLater } from "@/feedback";
 import { ConfidenceRing } from "@/motion";
 import { safeImageUri } from "@/format";
 import { CastStrip, LinkRow, WatchRow, actionLabel, kindLabel, openLink, subtitleFor } from "@/results";
@@ -31,7 +31,7 @@ export default function ResultScreen() {
   const onSave = async () => {
     setSaving(true);
     await saveResult(result, source);
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    savedForLater();
     setSaving(false);
   };
 

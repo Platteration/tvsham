@@ -63,4 +63,24 @@ describe("toIdentification", () => {
     assert.equal(id.youtubeUrl, "https://youtu.be/dQw4w9WgXcQ");
     assert.equal(id.confidence, 0);
   });
+
+  // The model reads whatever is on the user's screen, so this URL is untrusted
+  // input that ends up in the device library: the host has to be checked as a
+  // host, not looked for somewhere in the string.
+  it("checks the host of a youtube url instead of searching the string for one", () => {
+    const kept = (youtubeUrl: string) => toIdentification({ ...base, youtubeUrl }).youtubeUrl;
+    assert.equal(
+      kept("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    );
+    assert.equal(kept("https://m.youtube.com/watch?v=dQw4w9WgXcQ"), "https://m.youtube.com/watch?v=dQw4w9WgXcQ");
+    assert.equal(kept("https://youtu.be/dQw4w9WgXcQ"), "https://youtu.be/dQw4w9WgXcQ");
+
+    assert.equal(kept("https://phish.example/watch?ref=youtube.com"), undefined);
+    assert.equal(kept("https://youtube.com.evil.example/watch?v=x"), undefined);
+    assert.equal(kept("https://notyoutube.com/watch?v=x"), undefined);
+    assert.equal(kept("http://www.youtube.com/watch?v=x"), undefined);
+    assert.equal(kept("javascript:alert(1)//youtube.com"), undefined);
+    assert.equal(kept("youtube.com/watch?v=x"), undefined);
+  });
 });

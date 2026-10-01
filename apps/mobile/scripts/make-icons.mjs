@@ -1,5 +1,5 @@
-// Generates the app icon, Android adaptive-icon foreground and splash glyph
-// with no image dependencies: a tiny PNG encoder over Node's zlib.
+// Generates the app icon, the three Android adaptive-icon layers and the splash
+// glyph with no image dependencies: a tiny PNG encoder over Node's zlib.
 // Run: node scripts/make-icons.mjs
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -128,10 +128,33 @@ writeFileSync(
   ], null)),
 );
 
-// 2. Android adaptive icon foreground: glyph only, on transparent, inside the safe zone.
+// 2. Android adaptive icon, as three layers the launcher composes itself. All
+//    three must share one size: prebuild refuses a background that does not.
+const ADAPTIVE = 1024;
+const adaptiveGlyph = (color) => glyph(0.52, 0.5, 0.26, color);
+//    a. Foreground: glyph only, on transparent, inside the safe zone.
 writeFileSync(
   join(out, "adaptive-icon.png"),
-  png(1024, render(1024, glyph(0.52, 0.5, 0.26, ACCENT), null)),
+  png(ADAPTIVE, render(ADAPTIVE, adaptiveGlyph(ACCENT), null)),
+);
+//    b. Background: flat, the app's backgroundColor. A flat image rather than
+//       the colour key alone, so the layer set is complete and the colour that
+//       shows through the mask is the one app.json names everywhere else.
+writeFileSync(
+  join(out, "android-icon-background.png"),
+  png(ADAPTIVE, render(ADAPTIVE, [], BG)),
+);
+//    c. Monochrome: the same glyph, alpha only. Android 13's themed icons read
+//       the alpha and tint it to the wallpaper, so every pixel's colour is set
+//       to white outright rather than left to the compositor, whose float
+//       maths truncates to 254 where two anti-aliased edges meet.
+const alphaOnly = (rgba) => {
+  for (let o = 0; o < rgba.length; o += 4) rgba[o] = rgba[o + 1] = rgba[o + 2] = 255;
+  return rgba;
+};
+writeFileSync(
+  join(out, "android-icon-monochrome.png"),
+  png(ADAPTIVE, alphaOnly(render(ADAPTIVE, adaptiveGlyph(WHITE), null))),
 );
 
 // 3. Splash glyph: white, transparent background.
@@ -140,4 +163,7 @@ writeFileSync(
   png(512, render(512, glyph(0.53, 0.5, 0.34, WHITE), null)),
 );
 
-console.log("wrote icon.png, adaptive-icon.png, splash-icon.png to", out);
+console.log(
+  "wrote icon.png, adaptive-icon.png, android-icon-background.png, android-icon-monochrome.png, splash-icon.png to",
+  out,
+);

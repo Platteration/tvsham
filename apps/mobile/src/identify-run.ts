@@ -6,7 +6,7 @@
  * so it lives apart from React and is tested directly. `useIdentify` supplies
  * the real dependencies and turns the reported states into React state.
  */
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 
 export type Phase = "idle" | "recording" | "uploading" | "done" | "error" | "queued";
 
@@ -33,11 +33,18 @@ export interface ClipProducer {
 }
 
 export interface IdentifyDeps {
-  createSession(source: CaptureSource, hints?: string): Promise<string>;
-  uploadClip(sessionId: string, uri: string, opts: { clipKey: string }): Promise<RecognitionResult>;
-  endSession(sessionId: string): void;
+  /** The id names the session; the key that comes with it authorises the rest. */
+  createSession(source: CaptureSource, hints?: string): Promise<SessionHandle>;
+  uploadClip(
+    session: SessionHandle,
+    uri: string,
+    opts: { clipKey: string; signal?: AbortSignal },
+  ): Promise<RecognitionResult>;
+  endSession(session: SessionHandle): void;
   /** Keep a clip that never reached the server. Returns null if it could not be kept. */
   enqueue(uri: string, source: CaptureSource, reason: string, hints?: string): Promise<unknown | null>;
+  /** Throw away a recording nobody is going to send. Optional: tests need no files. */
+  discardClip?(uri: string): void;
   /** True when the error came from the server rather than the network. */
   isApiError(err: unknown): boolean;
   /** Hand the finished answer to the rest of the app. */
@@ -46,8 +53,8 @@ export interface IdentifyDeps {
   onState(next: IdentifyState | ((prev: IdentifyState) => IdentifyState)): void;
   /** Whether the user has cancelled since this run began. */
   isCancelled(): boolean;
-  /** Called once the session id exists, so a cancel can end it server-side. */
-  onSession(sessionId: string): void;
+  /** Called once the session exists, so a cancel can end it server-side. */
+  onSession(session: SessionHandle): void;
 }
 
 export interface IdentifyOptions {
@@ -55,6 +62,48 @@ export interface IdentifyOptions {
   producer: ClipProducer;
   maxClips: number;
   hints?: string;
+  /**
+   * Aborted when this run is cancelled. Without it the upload stays open after
+   * the user has stopped, and its answer arrives for a run nobody is watching.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * One cancellation token per run.
+ *
+ * A single shared boolean cannot do this job: cancelling sets it and the next
+ * start clears it, so a run cancelled mid-upload sees itself as live again when
+ * its request finally resolves and reports its answer over the run that
+ * replaced it. Each run compares its own generation instead, which no later run
+ * can undo, and gets a signal that closes the request it is waiting on rather
+ * than leaving it open to be paid for twice.
+ */
+export interface RunGuard {
+  /** Begin a run, cancelling whatever was running before it. */
+  begin(): { isCancelled(): boolean; signal: AbortSignal };
+  /** Cancel the current run. Everything started before this stays cancelled. */
+  cancel(): void;
+}
+
+export function createRunGuard(): RunGuard {
+  let generation = 0;
+  let inFlight: AbortController | null = null;
+  const stop = () => {
+    generation++;
+    inFlight?.abort();
+    inFlight = null;
+  };
+  return {
+    begin() {
+      stop();
+      const mine = generation;
+      const own = new AbortController();
+      inFlight = own;
+      return { isCancelled: () => generation !== mine, signal: own.signal };
+    },
+    cancel: stop,
+  };
 }
 
 function messageFor(err: unknown): string {
@@ -87,12 +136,27 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
 
   // Start recording immediately; the session is created while the first clip records.
   let recording: Promise<string | null> = producer.record().catch(() => null);
-  let sessionId: string | null = null;
+  let session: SessionHandle | null = null;
+
+  /**
+   * Throw away a recording nobody is going to send. The run can end while one
+   * is still going — the server says it has enough, the user cancels, a request
+   * fails — and its file would otherwise sit in the cache directory with
+   * nothing left holding a reference to it. A clip that was kept for later is
+   * left alone: enqueue has already moved that file somewhere it will survive.
+   */
+  const discardPending = () => {
+    const pending = recording;
+    recording = Promise.resolve(null);
+    void pending.then((uri) => {
+      if (uri && uri !== unsentClipUri) deps.discardClip?.(uri);
+    });
+  };
 
   try {
-    sessionId = await overNetwork(() => deps.createSession(source, opts.hints));
+    session = await overNetwork(() => deps.createSession(source, opts.hints));
     if (deps.isCancelled()) return;
-    deps.onSession(sessionId);
+    deps.onSession(session);
 
     let latest: RecognitionResult | null = null;
     let clipsDone = 0;
@@ -103,10 +167,14 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
       unsentClipUri = uri;
 
       deps.onState({ phase: "uploading", clip, result: latest, error: null });
-      const upload = overNetwork(() => deps.uploadClip(sessionId!, uri, { clipKey: `${sessionId}:${clip}` }));
-      // Keep listening while the server thinks.
+      const upload = overNetwork(() =>
+        deps.uploadClip(session!, uri, { clipKey: `${session!.sessionId}:${clip}`, signal: opts.signal }),
+      );
+      // Keep listening while the server thinks. Caught like the first one: the
+      // server may say it has enough while this is still going, and a recording
+      // that then fails would be a rejection with nobody left to handle it.
       const hasNext = clip < maxClips;
-      recording = hasNext ? producer.record() : Promise.resolve(null);
+      recording = hasNext ? producer.record().catch(() => null) : Promise.resolve(null);
 
       latest = await upload;
       // Analysed and paid for: it must never be queued and sent again.
@@ -142,6 +210,7 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
         : { ...prev, phase: "error", error: message },
     );
   } finally {
-    if (sessionId) deps.endSession(sessionId);
+    discardPending();
+    if (session) deps.endSession(session);
   }
 }

@@ -52,7 +52,7 @@ async function readLabels(dir: string): Promise<ClipLabel[]> {
 }
 
 /** One clip through the same steps the server uses for an uploaded clip. */
-async function analyse(clipPath: string, model: string): Promise<{ evidence: Evidence; seconds: number }> {
+async function analyse(clipPath: string): Promise<{ evidence: Evidence; seconds: number }> {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "tvsham-eval-"));
   const started = Date.now();
   try {
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
     process.stdout.write(`  ${label.file} … `);
     try {
       const started = Date.now();
-      const { evidence } = await analyse(clipPath, opts.model);
+      const { evidence } = await analyse(clipPath);
       const identification = await recognise(evidence, { model: opts.model });
       const verdict = score(label, identification, opts.minConfidence);
       scored.push({

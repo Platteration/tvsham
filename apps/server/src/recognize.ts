@@ -206,6 +206,23 @@ export async function recognise(ev: Evidence, opts: { model?: string } = {}): Pr
   return toIdentification(out);
 }
 
+/**
+ * A YouTube URL the model handed back, or null. The host is parsed rather than
+ * searched for: "https://phish.example/watch?ref=youtube.com" contains the
+ * string and is not YouTube. The model reads text off the user's screen, so
+ * this value is as untrusted as the clip, and it is returned to the app and
+ * persisted in the device library — the same check platformVideoLink makes.
+ */
+function youtubeUrlOrNull(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:") return null;
+    return /^(.+\.)?(youtube\.com|youtu\.be)$/.test(u.hostname) ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function toIdentification(o: z.infer<typeof IdentificationSchema>): Identification {
   const id: Identification = {
     kind: o.kind as MediaKind,
@@ -219,7 +236,8 @@ export function toIdentification(o: z.infer<typeof IdentificationSchema>): Ident
   if (o.platform) id.platform = o.platform as VideoPlatform;
   if (o.wikipediaTitle) id.wikipediaTitle = o.wikipediaTitle;
   if (o.wikipediaEpisodeTitle) id.wikipediaEpisodeTitle = o.wikipediaEpisodeTitle;
-  if (o.youtubeUrl && /youtube\.com|youtu\.be/.test(o.youtubeUrl)) id.youtubeUrl = o.youtubeUrl;
+  const youtube = o.youtubeUrl ? youtubeUrlOrNull(o.youtubeUrl) : null;
+  if (youtube) id.youtubeUrl = youtube;
   if (o.videoUrl && /^https:\/\//.test(o.videoUrl)) id.videoUrl = o.videoUrl;
   if (o.season || o.episodeNumber || o.episodeTitle) {
     id.episode = {};

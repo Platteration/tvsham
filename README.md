@@ -27,23 +27,17 @@ There is no public fingerprint database for TV and film the way there is for mus
 3. If a speech‑to‑text provider is configured, the audio becomes a transcript of the dialogue.
 4. Claude looks at the frames (on‑screen titles, captions, channel names, faces, sets, app UI) and the transcript, and uses **web search** to verify: a quoted line of dialogue usually pins down the exact episode; a title plus channel pins down the YouTube video.
 5. The server verifies the answer against Wikipedia's API (article summary, thumbnail) or YouTube's oEmbed (title, channel, thumbnail) so the link you get is real, and falls back to a search link when it isn't sure.
-6. If confidence is low, the app keeps listening. While one clip is being analysed the next is already recording, up to four clips (~32 s). Every clip is deleted from the server as soon as it has been analysed.
+6. If confidence is low, the app keeps listening. While one clip is being analysed the next is already recording, up to four clips (~32 s). Every clip is deleted from the server as soon as it has been analysed, and anything a hard stop left behind is swept on the next start and every minute after it.
 
 ### Attribution
 
 Where-to-watch and cast data come from TMDB when `TMDB_API_KEY` is set. This product uses the TMDB API but is not endorsed or certified by TMDB.
 
-## Repository layout
+## Running it
 
-```
-apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker)
-apps/server      Node 22 + Hono server (ffmpeg, @anthropic-ai/sdk)
-packages/shared  Types shared by both (Identification, RecognitionResult, ...)
-```
+### Run the server
 
-## Run the server
-
-Requirements: Node 20+, an Anthropic API key. ffmpeg is bundled via `ffmpeg-static`; a system `ffmpeg` on `PATH` is used when present.
+Requirements: Node 22+, an Anthropic API key. ffmpeg is bundled via `ffmpeg-static`; a system `ffmpeg` on `PATH` is used when present.
 
 ```bash
 npm install
@@ -51,11 +45,21 @@ cp apps/server/.env.example apps/server/.env      # add ANTHROPIC_API_KEY
 npm run server                                    # http://localhost:8787
 ```
 
+It listens on loopback, which is what that address says: out of the box there is
+no token and no daily cap, and a laptop joins networks you do not control. To
+let a phone on your LAN reach it, set `APP_TOKEN` first and then `HOST=0.0.0.0`.
+
 Or with Docker (ffmpeg included):
 
 ```bash
 docker compose up --build
 ```
+
+The compose file publishes the port on `127.0.0.1` only, because Docker opens
+published ports by writing its own iptables rules and a host firewall does not
+stop it. To let a phone on your LAN reach it, either put a TLS proxy in front or
+change the mapping to `- "8787:8787"` deliberately, having set `APP_TOKEN` and
+`DAILY_CLIP_LIMIT` first.
 
 Check it: `curl http://localhost:8787/health` →
 
@@ -63,58 +67,77 @@ Check it: `curl http://localhost:8787/health` →
 { "ok": true, "version": "0.1.0", "ffmpeg": true, "stt": "none", "model": "claude-opus-5" }
 ```
 
-### Deploying safely
+#### Deploying safely
 
 - Set `APP_TOKEN` whenever the server is reachable beyond your own LAN: every clip costs Claude API money, and without a token anyone who finds the port can spend it. The server warns at startup when it is unset.
-- The app keeps the access token in the device keychain (`expo-secure-store`), not in plain app storage, and migrates one saved by an earlier build. Settings and the saved library stay in ordinary storage.
-- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. Behind a proxy, set `TRUST_PROXY=true` so the real client address is used. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
-- Put TLS in front of it (a reverse proxy or your host's ingress); the app talks plain HTTP to whatever URL you give it.
+- The app keeps the access token in the device keychain (`expo-secure-store`), not in plain app storage, and migrates one saved by an earlier build. It is stored for this device only — the iOS keychain class is `WHEN_UNLOCKED_THIS_DEVICE_ONLY`, and on Android the app's own backup rules leave the keychain's file out of cloud backup and device transfer — so it does not travel to a new phone; type it in again there. Settings, the saved library and the recent list do travel: they are in ordinary app storage, which those same rules include.
+- Set `DAILY_CLIP_LIMIT` if the server is public. It counts against the connecting address, never a header the caller sets, so it cannot be reset by rotating an id. An IPv6 client is counted against its /64 rather than its exact address, because a normal allocation hands one client a whole /64 to rotate through; IPv4 callers are counted against the full address. Behind a proxy of your own, set `TRUST_PROXY` to the number of proxies you run (`true` still means one) so the real client address is used: the header is read from the proxy end, because every proxy appends the address it saw to whatever the client already sent, and the leftmost entry is therefore the caller's own typing. Set it even when the proxy is on the same host — a container published on `127.0.0.1` sees the Docker bridge gateway for every client, so without it the whole world shares one bucket and one caller exhausts the cap for everybody. The app still sends a random per-install id, which identifies the install and nothing about the person, but it is a label rather than an identity.
+- A session is authorised by the `sessionKey` it was created with, not by the address it is called from: the id names the session and travels in every URL, so it is a poor credential, while a phone changes network in the middle of a capture and must not lose its own session for it. The server's request log prints `/sessions/<id>` rather than the id.
+- Sessions are bounded per caller as well as globally (`MAX_SESSIONS_PER_CALLER`), and no session outlives `SESSION_MAX_AGE_MS` however often it is read. Reading a session refreshes its idle timer, so without an absolute lifetime one caller could hold every session slot with a cheap poll and turn the server into a 503 for everyone else.
+- Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS. A public `http:` address is warned about in Settings but not blocked, and Android permits the connection (its cleartext setting is all-or-nothing, and what a LAN server needs is a private IP literal, which Android's per-domain rules cannot express) while iOS refuses it — so on Android that configuration sends your clips and results in the clear. Use `https://` for anything off your own network.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
-- Decoding is bounded: every ffmpeg run has a hard timeout, oversized or overlong inputs are refused before a frame is decoded, and the input is restricted to local files. A small file can otherwise declare enormous dimensions and cost gigabytes to decode.
+- Decoding is bounded at both ends. What a clip claims about itself is read by one ffmpeg probe, and that probe is bounded before it runs: `MAX_STREAMS` caps how many decoders it may open at all, `PROBE_MEMORY_MB` caps the address space it may take, and it reads only the first 100 KB of the file instead of decoding frames from every stream to fill in what the container did not declare. That last one is the difference between 736 MB and 113 MB for a 1.4 MB upload carrying eight 8192x4608 streams. The pixel and duration budgets (`MAX_PIXELS`, `MAX_DURATION_SECONDS`) are then applied to what the probe reported — after that one bounded run and before any frame is extracted. Every ffmpeg run has a hard timeout, and the input is restricted to local files and to the container formats a phone records.
 - No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
-### Server configuration
+#### Server configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | – | **Required.** |
 | `CLAUDE_MODEL` | `claude-opus-5` | Recognition model. |
 | `PORT` | `8787` | Listen port. |
+| `HOST` | `127.0.0.1` | Interface to listen on. `0.0.0.0` to let other devices reach it — set `APP_TOKEN` first. The Docker image sets it, because there the published port is the boundary. |
 | `APP_TOKEN` | – | If set, the app must send it as a bearer token (enter it in Settings). |
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
 | `DAILY_CLIP_LIMIT` | `0` (off) | Clips one caller may have analysed per day, counted against the connecting address. In-memory, so it resets on restart. |
-| `TRUST_PROXY` | `false` | Count the cap against `X-Forwarded-For`. Only enable behind a proxy you control. |
-| `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. |
+| `TRUST_PROXY` | `0` (off) | How many proxies of your own stand in front of the server; `true` means one. The caller's address is then the `X-Forwarded-For` hop that many from the right, which the client cannot forge. A hop your proxy wrote a port onto (`203.0.113.9:54321`, `[2001:db8::1]:443` — Azure does this) is understood; one that is not an address at all is counted in the shared bucket, and the server warns once when that happens. Only set it behind proxies you control. |
+| `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. `*` is refused at startup: it would hand every page on the internet your Claude budget, and the cross-origin check would turn away every request the preflight had just allowed. |
 | `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
-| `MAX_PIXELS` | `9437184` | Largest frame the server will decode. |
+| `MAX_PIXELS` | `9437184` | Largest frame the server will decode, and the most a clip's streams may total. Checked against what the probe read, so it bounds *extraction*; what bounds the probe is the row below and `PROBE_MEMORY_MB`. |
+| `MAX_STREAMS` | `8` | Streams one upload may declare — every stream, not only video. ffmpeg opens a decoder per stream while probing, so the count needs a bound that applies before the probe rather than after it. A phone records a video and an audio track plus a timecode or metadata track or two. |
+| `PROBE_MEMORY_MB` | `512` | Address space one probe may take, in MB; `0` turns it off. Several times what any legitimate clip needs, as a second line behind the probe's read limit. A probe that cannot fit is refused as unreadable, and the server says so once in the log. |
 | `MAX_DURATION_SECONDS` | `900` | Longest clip the server will decode. |
+| `MAX_UPLOADS_IN_FLIGHT` | `2 × MAX_CONCURRENT` | Uploads that may be in memory at once, counted before the body is read. Further ones get a 503 with `Retry-After`. |
+| `MAX_UPLOADS_PER_CALLER` | `½ × MAX_UPLOADS_IN_FLIGHT` | How many of those slots one address may hold. A body is only released when all of it has arrived, so a few stalled sockets would otherwise 503 everyone else. |
+| `REQUEST_TIMEOUT_MS` | `240000` | How long the server waits for a whole request body before dropping it (Node's own default is 5 minutes). The default is the app's own 180 s upload deadline plus Node's 30 s expiry check and some slack, so that the app gives up first and can tell the user why: 80 MB is a whole screen recording, and a body cut off mid-upload reaches the app as a network failure it will queue and retry into the same wall. |
+| `HEADERS_TIMEOUT_MS` | `15000` | The same for the headers. |
 | `MAX_SESSIONS` | `500` | Live sessions before new ones are refused. |
+| `MAX_SESSIONS_PER_CALLER` | `20` | Live sessions one connecting address may hold at once. |
+| `SESSION_MAX_AGE_MS` | `3600000` | Absolute session lifetime, whatever the idle timer says. |
 | `RETRY_WAIT_MS` | `45000` | How long a retried clip waits for the original analysis before the server answers 202 and the app polls. 0 answers 202 immediately. |
 | `FIRST_PASS_MODEL` | – | Cheaper model for a first pass; the main model re-reads the same evidence only when that answer is not confident. |
 | `STT_PROVIDER` | `none` | `whisper-http` posts the audio to an OpenAI‑style `/v1/audio/transcriptions` endpoint (hosted or self‑hosted whisper). Adds dialogue to the evidence, which matters most for identifying *episodes*. |
-| `STT_URL`, `STT_API_KEY`, `STT_MODEL` | – | Settings for `whisper-http`. |
+| `STT_URL` | – | Where `whisper-http` sends the audio. Required by it — there is no default, because a recording of your room should go where you say and nowhere else. The server refuses to start without it. |
+| `STT_API_KEY`, `STT_MODEL`, `STT_TIMEOUT_MS` | – | The rest of the `whisper-http` settings; the timeout defaults to `60000`. |
 | `YOUTUBE_API_KEY` | – | Optional YouTube Data API v3 key for a proper search fallback. Without it, direct links are still verified via oEmbed. |
 | `WIKIPEDIA_LANG` | `en` | Wikipedia edition for article lookups. |
 | `TMDB_API_KEY` | – | Optional TMDB key. Adds "where to watch" and a cast list to film and TV results. |
 | `WATCH_REGION` | `US` | Country for watch providers when the app sends none; the app sends the device's own. |
 | `FFMPEG_PATH` | auto | Explicit ffmpeg binary. |
 
-### API
+#### API
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | `GET` | `/health` | – | `HealthResponse` |
-| `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId }` |
+| `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId, sessionKey }` |
 | `POST` | `/sessions/:id/clips` | multipart, field `clip` (mp4/mov/webm) | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
+
+Every call about an existing session carries `X-Session-Key: <sessionKey>`, the secret
+returned when it was created; without it the answer is `404`, the same as for an id that
+never existed. The id only names a session — it is in the path, so it is in every access
+log on the way — while the key is sent in a header and never logged. Update the server
+and the app together: a build of the app from before this existed cannot talk to a server
+with it.
 
 A clip upload answers `202` when that clip is already being analysed (a retry arriving while the original is in flight); the app then polls `GET /sessions/:id` until `analysing` turns false, instead of mistaking the mid-flight state for an answer.
 
 `RecognitionResult.status` is `listening` (send another clip), `identified`, `unsure` (best guess after the clip limit) or `failed`. See `packages/shared/src/index.ts` for the full shapes.
 
-## Run the app
+### Run the app
 
 ```bash
 npm run mobile            # starts Metro; scan the QR with Expo Go, or press i / a
@@ -124,32 +147,35 @@ Expo Go is enough for development: the camera, microphone and photo picker all w
 
 For device builds, `npx expo prebuild` then `npx expo run:ios` / `npx expo run:android`, or use EAS with the profiles in `apps/mobile/eas.json` (`eas build --profile preview --platform android` gives an installable APK). The icon and splash assets are generated by `node scripts/make-icons.mjs`; edit that script to restyle them.
 
-### Modes
+#### Modes
 
 Both modes take an optional one-line hint ("90s sitcom", "on Netflix"). Anything you already know narrows the search, which matters most for long-running shows.
 
 - **Point at a TV** – full‑screen camera. Tap *Identify*; the app records 8‑second clips at 480p and keeps going until the server is confident or you tap stop. Get dialogue or on‑screen text (subtitles, a title card, a channel name) in frame for the best results.
 - **My screen** – iOS does not let third‑party apps capture other apps' screens (that needs a Broadcast Upload Extension), so both platforms use the OS screen recorder: record with the system control, then pick the recording in the app. The server analyses up to the first 60 seconds. Titles, captions and channel names in the UI make this mode very accurate for YouTube, Shorts, TikTok and Reels.
 
-### Look and feel
+#### Look and feel
 
 Dark by default, with a full light palette that follows the system or can be pinned in Settings, and four accent packs. While a clip is being taken, sonar rings pulse out of the capture button and the button breathes, so the wait reads as listening rather than hanging; corner brackets frame where to point. Results lead with a confidence ring (green, amber, red) instead of a bare percentage, over a poster backdrop blurred to fill the card. All animation is native-driven so the camera preview stays smooth.
 
 Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
 
-### When the server is out of reach
+#### When the server is out of reach
 
 A clip that cannot be uploaded is kept rather than lost: it is moved out of the cache into the app's own storage and queued, up to ten clips. The capture screen shows how many are waiting, and the queue is retried whenever the app comes back to the foreground or you tap *Try now*. This is what makes the app usable on a plane or in a dead zone: record now, get the answer when there is a connection.
 
-### Result and library
+#### Result and library
 
 The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.
 
 ## Development
 
 ```bash
-npm run typecheck     # all workspaces
-npm test              # unit tests in both workspaces
+npm run lint              # eslint in every workspace
+npm run typecheck         # all workspaces
+npm test                  # unit tests in both workspaces
+npm run test:conventions  # the shared repository conventions (CONVENTIONS.md)
+npm run check             # all of the above: the gate before a push
 ```
 
 The server tests cover the ffmpeg pipeline, link resolution, TMDB enrichment, the
@@ -158,7 +184,15 @@ the pure layer: the record-and-upload loop against injected fakes, settings vali
 result formatting, the offline-queue drop policy, and a contrast audit that holds every text pairing in both schemes and all four accents to
 WCAG AA.
 
-CI (`.github/workflows/ci.yml`) runs the typecheck, the server tests, a Metro bundle of the app, and a Docker build of the server.
+CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test and a Metro bundle of the app, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
+
+## Project layout
+
+```
+apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker)
+apps/server      Node 22 + Hono server (ffmpeg, @anthropic-ai/sdk)
+packages/shared  Types shared by both (Identification, RecognitionResult, ...)
+```
 
 ## Roadmap / known limits
 

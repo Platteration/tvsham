@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CaptureSource, RecognitionResult } from "@tvsham/shared";
-import { runIdentification, type ClipProducer, type IdentifyDeps, type IdentifyState } from "./identify-run.js";
+import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
+import {
+  createRunGuard,
+  runIdentification,
+  type ClipProducer,
+  type IdentifyDeps,
+  type IdentifyState,
+} from "./identify-run.js";
 
 class FakeApiError extends Error {}
 
@@ -25,11 +31,17 @@ interface Harness {
   deps: IdentifyDeps;
   states: IdentifyState[];
   uploaded: string[];
+  /** The session handle each upload was given, key and all. */
+  uploadedWith: SessionHandle[];
   queued: Array<{ uri: string; reason: string }>;
+  discarded: string[];
   results: RecognitionResult[];
   endedSessions: string[];
   cancel(): void;
 }
+
+/** Let the microtask that cleans up an abandoned recording actually run. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /**
  * `upload` decides what the server answers for each clip; the harness always
@@ -41,23 +53,27 @@ function harness(
   const { upload, ...overrides } = opts;
   const states: IdentifyState[] = [];
   const uploaded: string[] = [];
+  const uploadedWith: SessionHandle[] = [];
   const queued: Array<{ uri: string; reason: string }> = [];
+  const discarded: string[] = [];
   const results: RecognitionResult[] = [];
   const endedSessions: string[] = [];
   let cancelled = false;
   let last: IdentifyState = { phase: "idle", clip: 0, result: null, error: null };
 
   const deps: IdentifyDeps = {
-    createSession: async () => "s1",
-    uploadClip: async (_id, uri) => {
+    createSession: async () => ({ sessionId: "s1", sessionKey: "k1" }),
+    uploadClip: async (session, uri) => {
       uploaded.push(uri);
+      uploadedWith.push(session);
       return upload ? upload(uri, uploaded.length) : result();
     },
-    endSession: (id) => endedSessions.push(id),
+    endSession: (session) => endedSessions.push(session.sessionId),
     enqueue: async (uri, _source, reason) => {
       queued.push({ uri, reason });
       return { id: "q1" };
     },
+    discardClip: (uri) => discarded.push(uri),
     isApiError: (err) => err instanceof FakeApiError,
     onResult: (r) => results.push(r),
     onState: (next) => {
@@ -74,7 +90,9 @@ function harness(
     states,
     uploaded,
     queued,
+    discarded,
     results,
+    uploadedWith,
     endedSessions,
     cancel: () => {
       cancelled = true;
@@ -150,6 +168,67 @@ describe("identification loop", () => {
     await run(h, p);
     // While clip 1 was uploading, clip 2 had already been asked for.
     assert.equal(recordingsDuringUpload[0], 2, "the next clip must record during the upload");
+  });
+
+  it("throws away the look-ahead recording the server made unnecessary", async () => {
+    // The next clip is already being recorded while the current one uploads, so
+    // "found it" always leaves a file behind. Nothing else refers to it.
+    const h = harness();
+    const p = producer(["a.mp4", "b.mp4"]);
+    await run(h, p);
+    await settle();
+
+    assert.deepEqual(h.uploaded, ["a.mp4"]);
+    assert.deepEqual(h.discarded, ["b.mp4"]);
+  });
+
+  it("throws away the recording nobody will send when the user cancels", async () => {
+    const h = harness({
+      upload: async () => {
+        h.cancel();
+        return result({ wantsMore: true });
+      },
+    });
+    await run(h, producer(["a.mp4", "b.mp4", "c.mp4"]));
+    await settle();
+
+    assert.deepEqual(h.discarded, ["b.mp4"]);
+  });
+
+  it("never throws away a clip that was kept for later", async () => {
+    const h = harness({
+      upload: async () => {
+        throw new Error("Network request failed");
+      },
+    });
+    await run(h, producer(["a.mp4", "b.mp4"]));
+    await settle();
+
+    assert.deepEqual(h.queued.map((q) => q.uri), ["a.mp4"]);
+    assert.equal(h.discarded.includes("a.mp4"), false, "enqueue has already moved that file");
+  });
+
+  it("handles a look-ahead recording that fails after the loop has ended", async () => {
+    // The camera can fail while the previous clip uploads — a phone call, the
+    // app backgrounded. Nothing awaits that promise once the loop is over, so
+    // an uncaught one is reported as an unhandled rejection (and fails this
+    // file), and the run itself must be unaffected.
+    let recordings = 0;
+    const p: ClipProducer = {
+      async record() {
+        recordings++;
+        if (recordings === 1) return "a.mp4";
+        throw new Error("Recording interrupted");
+      },
+      stop() {},
+    };
+    const h = harness({ upload: async () => result({ wantsMore: true }) });
+    await run(h, p, 2);
+    await settle();
+
+    assert.equal(h.states.at(-1)?.phase, "error");
+    assert.match(h.states.at(-1)?.error ?? "", /Recording produced no file/);
+    assert.deepEqual(h.discarded, []);
   });
 
   it("keeps a clip the network never delivered", async () => {
@@ -238,5 +317,110 @@ describe("identification loop", () => {
     });
     await run(h, producer(["a.mp4"]));
     assert.deepEqual(h.endedSessions, ["s1"]);
+  });
+
+  it("carries the session's key into every call about it, not just its id", async () => {
+    // The id names the session; the key is what authorises reading it,
+    // uploading to it and ending it. Dropping the key anywhere along the loop
+    // is four 404s in a row from the server's point of view.
+    const h = harness({ upload: async (_uri, n) => result({ wantsMore: n < 2 }) });
+    await run(h, producer(["a.mp4", "b.mp4"]), 2);
+
+    assert.equal(h.uploadedWith.length, 2);
+    for (const session of h.uploadedWith) {
+      assert.deepEqual(session, { sessionId: "s1", sessionKey: "k1" });
+    }
+  });
+
+  it("hands the run's abort signal to the upload", async () => {
+    // Nothing else can close an upload that is already open, so a cancel with
+    // no signal leaves the clip being analysed and paid for after the user
+    // has stopped.
+    const signals: Array<AbortSignal | undefined> = [];
+    const h = harness({
+      uploadClip: async (_session, _uri, opts) => {
+        signals.push(opts.signal);
+        return result();
+      },
+    });
+    const guard = createRunGuard();
+    const own = guard.begin();
+    await runIdentification(h.deps, {
+      source,
+      producer: producer(["a.mp4"]),
+      maxClips: 1,
+      signal: own.signal,
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0], own.signal);
+    assert.equal(signals[0]?.aborted, false);
+    guard.cancel();
+    assert.equal(own.signal.aborted, true, "cancelling must abort the request the run is waiting on");
+  });
+
+  it("never lets a cancelled run report over the run that replaced it", async () => {
+    // The sequence a user hits easily: stop while a clip is uploading, then tap
+    // Identify again. With one shared cancelled flag the restart clears it, and
+    // the first upload - still open - finishes believing it is live and pushes
+    // the previous session's answer at the new run.
+    const guard = createRunGuard();
+    let release: (r: RecognitionResult) => void = () => {};
+    let uploading = false;
+    const stale = harness({
+      upload: () =>
+        new Promise<RecognitionResult>((resolve) => {
+          release = resolve;
+          uploading = true;
+        }),
+    });
+    const firstRun = guard.begin();
+    const first = runIdentification(
+      { ...stale.deps, isCancelled: firstRun.isCancelled },
+      { source, producer: producer(["a.mp4"]), maxClips: 1, signal: firstRun.signal },
+    );
+    // Let it get as far as the upload.
+    for (let i = 0; i < 100 && !uploading; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.ok(uploading, "the first run should be waiting on its upload");
+
+    guard.cancel(); // the user taps stop
+    const secondRun = guard.begin(); // ...and then Identify again
+    assert.equal(secondRun.isCancelled(), false, "the new run is live");
+    assert.equal(firstRun.isCancelled(), true, "and the old one stays cancelled");
+
+    release(result({ sessionId: "stale", message: "Stale answer." }));
+    await first;
+
+    assert.deepEqual(stale.results, [], "a cancelled run must not deliver a result");
+    assert.ok(
+      stale.states.every((s) => s.phase !== "done"),
+      "nor report over the state of the run that replaced it",
+    );
+  });
+});
+
+describe("run guard", () => {
+  it("cancels each run separately rather than sharing one flag", () => {
+    const guard = createRunGuard();
+    const a = guard.begin();
+    const b = guard.begin();
+    assert.equal(a.isCancelled(), true, "beginning a run cancels the one before it");
+    assert.equal(b.isCancelled(), false);
+    guard.cancel();
+    assert.equal(b.isCancelled(), true);
+    const c = guard.begin();
+    assert.equal(c.isCancelled(), false);
+    assert.equal(a.isCancelled(), true, "a cancelled run is never resurrected by a later start");
+    assert.equal(b.isCancelled(), true);
+  });
+
+  it("aborts the request each run is waiting on", () => {
+    const guard = createRunGuard();
+    const a = guard.begin();
+    assert.equal(a.signal.aborted, false);
+    const b = guard.begin();
+    assert.equal(a.signal.aborted, true, "starting again closes the previous upload");
+    assert.equal(b.signal.aborted, false);
+    guard.cancel();
+    assert.equal(b.signal.aborted, true);
   });
 });

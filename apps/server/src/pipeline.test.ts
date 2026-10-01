@@ -6,7 +6,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
-import type { RecognitionResult } from "@tvsham/shared";
+import type { CreateSessionResponse, RecognitionResult } from "@tvsham/shared";
 import { config } from "./config.js";
 import { setFetchForTests } from "./http.js";
 import { app } from "./index.js";
@@ -135,12 +135,16 @@ describe("upload pipeline", () => {
       body: JSON.stringify({ source: "camera", hints: "AMC drama", region: "us" }),
     });
     assert.equal(created.status, 201);
-    const { sessionId } = (await created.json()) as { sessionId: string };
+    const { sessionId, sessionKey } = (await created.json()) as CreateSessionResponse;
 
     const form = new FormData();
     form.set("clip", new Blob([clip], { type: "video/mp4" }), "clip.mp4");
     form.set("clipKey", "pipeline-1");
-    const res = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: form });
+    const res = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { "x-session-key": sessionKey },
+      body: form,
+    });
     assert.equal(res.status, 200);
     const body = (await res.json()) as RecognitionResult;
 
