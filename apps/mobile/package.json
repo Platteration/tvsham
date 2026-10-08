@@ -9,11 +9,14 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "prebuild": "expo prebuild",
+    "build:web": "node scripts/build-web.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
-    "test": "node --import tsx --test \"src/*.test.ts\""
+    "test": "node --import tsx --test \"src/*.test.ts\"",
+    "test:e2e": "node --import tsx e2e/web.mjs"
   },
   "dependencies": {
+    "@expo/metro-runtime": "~57.0.15",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@tvsham/shared": "*",
     "expo": "~57.0.20",
@@ -37,12 +40,14 @@
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
-    "react-native-svg": "15.15.4"
+    "react-native-svg": "15.15.4",
+    "react-native-web": "~0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.0",
     "eslint": "^9.39.5",
     "eslint-config-expo": "^57.0.2",
+    "playwright": "1.56.1",
     "typescript": "^5.9.2"
   }
 }

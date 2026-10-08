@@ -179,6 +179,52 @@ export function caller(c: Context): string {
   return "ip:unknown";
 }
 /**
+ * What every answer from this server carries. It is an API: nothing it sends
+ * is a page, so no body of it may run script, load anything, be framed, be
+ * sniffed into another type, be embedded by another site or be kept by a cache
+ * on the way. That matters once the app is also a website: a browser reaches
+ * this server from the site's own origin, and the bodies are per session - the
+ * session key comes back in one, and every result says what someone watched.
+ *
+ * - Content-Security-Policy: default-src 'none' loads nothing at all, and
+ *   frame-ancestors 'none' keeps every response out of any frame.
+ * - X-Frame-Options: DENY says the same to browsers that predate frame-ancestors.
+ * - X-Content-Type-Options: nosniff: JSON is never read as HTML or script.
+ * - Referrer-Policy: no-referrer: a session id is in the path of every request.
+ * - Cross-Origin-Resource-Policy: same-origin: another site cannot embed a
+ *   response as an image, script or media. It governs no-cors requests only, so
+ *   the website's own CORS fetches (CORS_ORIGIN) are unaffected - the browser
+ *   suite drives them with this header on.
+ * - Cache-Control: no-store: every body is dynamic and most are per session.
+ *
+ * Strict-Transport-Security is not here: the server speaks plain HTTP behind
+ * the TLS proxy the README asks for, a browser ignores HSTS over HTTP, and the
+ * proxy that terminates TLS is the one that can promise it.
+ *
+ * Registered first, so it is the outermost middleware, and set twice. Before
+ * the rest runs, on the context, so that every response the context builds
+ * carries them from the start: @hono/node-server answers a HEAD by building a
+ * new Response from the GET one's original headers, and a header set on the
+ * finished response afterwards was lost there (measured: `curl -I` showed none
+ * of them). And again once everything else has answered - the routes, the CORS
+ * preflight, the Origin and token gates, the body limits, the not-found answer
+ * and the error handler - for a response built outside the context.
+ */
+export const API_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Cache-Control": "no-store",
+};
+app.use("*", async (c, next) => {
+  for (const [name, value] of Object.entries(API_HEADERS)) c.header(name, value);
+  await next();
+  for (const [name, value] of Object.entries(API_HEADERS)) c.res.headers.set(name, value);
+});
+
+/**
  * The session id is a capability: it is the only thing the session routes ask
  * for, and it is in the path of every request. Hono's logger prints the whole
  * path, so an hour of stdout — `docker logs`, journald, a pasted crash dump —

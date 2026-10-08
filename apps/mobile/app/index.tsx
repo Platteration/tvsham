@@ -13,13 +13,17 @@ import { Button, Card, Muted, Title } from "@/ui";
 import { useIdentify, type ClipProducer } from "@/useIdentify";
 import { clearQueue, flushQueue, isFlushing, loadQueue, queueLength, useQueue } from "@/queue";
 import { useHydrated, useSettings } from "@/store";
+import { holdClipFile, releaseClipFile } from "@/web-clips";
+
+/** A browser cannot record from the camera here (see WebCameraNotice), so it opens on the picker. */
+const ON_WEB = Platform.OS === "web";
 
 type Mode = CaptureSource;
 
 export default function CaptureScreen() {
   const styles = useStyles();
   const c = useTheme();
-  const [mode, setMode] = useState<Mode>("camera");
+  const [mode, setMode] = useState<Mode>(ON_WEB ? "screen" : "camera");
   const [hint, setHint] = useState("");
   const pending = useQueue();
   const [flushing, setFlushing] = useState(false);
@@ -93,11 +97,13 @@ export default function CaptureScreen() {
             onPress={() => setMode(m)}
             accessibilityRole="tab"
             accessibilityState={{ selected: mode === m }}
-            accessibilityLabel={m === "camera" ? "Point at a TV" : "Identify from a screen recording"}
+            accessibilityLabel={
+              m === "camera" ? "Point at a TV" : ON_WEB ? "Identify from a video file" : "Identify from a screen recording"
+            }
             style={[styles.modeTab, mode === m && styles.modeTabActive]}
           >
             <Text style={[styles.modeTabText, mode === m && styles.modeTabTextActive]}>
-              {m === "camera" ? "Point at a TV" : "My screen"}
+              {m === "camera" ? "Point at a TV" : ON_WEB ? "From a video" : "My screen"}
             </Text>
           </Pressable>
         ))}
@@ -114,7 +120,9 @@ export default function CaptureScreen() {
       ) : (
         <>
           <HintField value={hint} onChange={setHint} disabled={busy} />
-          {mode === "camera" ? (
+          {mode === "camera" && ON_WEB ? (
+            <WebCameraNotice onChooseVideo={() => setMode("screen")} />
+          ) : mode === "camera" ? (
             <CameraMode state={state} start={start} cancel={cancel} hint={hint} />
           ) : (
             <ScreenMode state={state} start={start} cancel={cancel} hint={hint} />
@@ -169,6 +177,24 @@ function HintField({ value, onChange, disabled }: { value: string; onChange: (v:
       style={styles.hintField}
       accessibilityLabel="Optional hint about what you are watching"
     />
+  );
+}
+
+/**
+ * The camera tab in a browser. expo-camera's web preview has no recording
+ * (its recordAsync answers an empty file), so rather than an Identify button
+ * that fails every time, the tab says what to do instead and leads there.
+ */
+function WebCameraNotice({ onChooseVideo }: { onChooseVideo: () => void }) {
+  const styles = useStyles();
+  return (
+    <Card style={styles.notice}>
+      <Title>Recording is in the phone app</Title>
+      <Muted style={{ marginTop: space.sm }}>
+        In a browser TVsham cannot record from the camera. Film the TV with your camera app, or record your screen, then choose that video here.
+      </Muted>
+      <Button label="Choose a video" style={{ marginTop: space.md }} onPress={onChooseVideo} />
+    </Card>
   );
 }
 
@@ -284,22 +310,28 @@ function ScreenMode({ state, start, cancel, hint }: ModeProps) {
     });
     if (res.canceled || !res.assets[0]) return;
     const asset = res.assets[0];
+    // In a browser the upload needs the File itself; see web-clips.ts.
+    if (asset.file) holdClipFile(asset.uri, asset.file);
     recordingPicked();
     const producer: ClipProducer = {
       record: async () => asset.uri,
     };
     // A screen recording is analysed in one go; the server looks at up to a minute of it.
-    void start("screen", producer, { maxClips: 1, hints: hint.trim() || undefined });
+    void start("screen", producer, { maxClips: 1, hints: hint.trim() || undefined }).finally(() =>
+      releaseClipFile(asset.uri),
+    );
   };
 
   return (
     <View style={{ padding: space.lg, gap: space.md }}>
       <Card>
-        <Title>Record your screen, then pick it</Title>
+        <Title>{ON_WEB ? "Choose a video" : "Record your screen, then pick it"}</Title>
         <Muted style={{ marginTop: space.sm }}>
-          {Platform.OS === "ios"
-            ? "1. Open Control Center and tap Screen Record.\n2. Watch the video for 10–20 seconds.\n3. Stop the recording and come back here."
-            : "1. Swipe down to Quick Settings and tap Screen record (with sound on).\n2. Watch the video for 10–20 seconds.\n3. Stop the recording and come back here."}
+          {ON_WEB
+            ? "Pick a video saved on this device: a screen recording, or the TV filmed with your camera app. The server looks at up to the first minute of it."
+            : Platform.OS === "ios"
+              ? "1. Open Control Center and tap Screen Record.\n2. Watch the video for 10–20 seconds.\n3. Stop the recording and come back here."
+              : "1. Swipe down to Quick Settings and tap Screen record (with sound on).\n2. Watch the video for 10–20 seconds.\n3. Stop the recording and come back here."}
         </Muted>
         <Muted style={{ marginTop: space.sm }}>
           Works with YouTube, Shorts, TikTok, Reels, Netflix and anything else playing on your phone. Titles, captions and channel names in the recording make it much more accurate.
@@ -309,7 +341,7 @@ function ScreenMode({ state, start, cancel, hint }: ModeProps) {
       {busy ? (
         <Button label="Cancel" variant="secondary" onPress={cancel} />
       ) : (
-        <Button label="Choose a screen recording" onPress={() => void pick()} />
+        <Button label={ON_WEB ? "Choose a video" : "Choose a screen recording"} onPress={() => void pick()} />
       )}
     </View>
   );

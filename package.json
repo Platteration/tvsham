@@ -15,7 +15,9 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces",
     "test:conventions": "node --test test/conventions.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run test:conventions"
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:conventions",
+    "test:e2e": "npm run test:e2e --workspace apps/mobile",
+    "test:all": "npm test && npm run test:e2e"
   },
   "engines": {
     "node": ">=22"

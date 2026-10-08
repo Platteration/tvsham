@@ -1,0 +1,105 @@
+/* TVsham website: the page around the app (index.html) and the not-found page (404.html).
+   Kept in a file, not a <style> block, so that the Content-Security-Policy needs nothing inline
+   for the page itself. The colours are the app's own (src/palette.ts), dark unless the browser
+   asks for light, as the app's System appearance does. */
+
+:root {
+  color-scheme: dark light;
+  --bg: #0b0b10;
+  --surface: #16161f;
+  --border: #2a2a38;
+  --text: #f4f4f8;
+  --muted: #9a9ab0;
+  --accent: #6f4dff;
+  --accent-text: #ffffff;
+  --danger: #ff5c7a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f6fa;
+    --surface: #ffffff;
+    --border: #dcdce6;
+    --text: #14141c;
+    --muted: #5d5d72;
+    --danger: #b81f3c;
+  }
+}
+
+/* react-native-web's recommended root: the page is the app's full height, and its scroll views
+   scroll, not the body. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+#root {
+  display: flex;
+  height: 100%;
+  flex: 1;
+}
+
+/* The safety net (guard.js): a standing note in place of an app that did not start. */
+.site-note {
+  display: none;
+  box-sizing: border-box;
+  margin: 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--danger);
+  border-radius: 14px;
+  background: var(--surface);
+  line-height: 1.5;
+}
+noscript .site-note,
+.startup-failed .site-note.startup-failed {
+  display: block;
+}
+
+/* 404.html */
+body.not-found {
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.not-found-card {
+  max-width: 28rem;
+  padding: 28px 24px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--surface);
+  text-align: center;
+  line-height: 1.5;
+}
+.not-found-card h1 {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+.not-found-card p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+.not-found-card a.button {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 12px 20px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+.not-found-card a.button:focus-visible {
+  outline: 3px solid var(--text);
+  outline-offset: 2px;
+}

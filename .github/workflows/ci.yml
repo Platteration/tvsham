@@ -44,8 +44,12 @@ jobs:
 
       - run: npm run test:conventions
 
-      - run: npx expo export --platform android --output-dir /tmp/export
+      - run: npx expo export --platform android --platform web --output-dir /tmp/export
         working-directory: apps/mobile
+
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm run test:e2e
 
   audit:
     runs-on: ubuntu-latest

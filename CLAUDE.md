@@ -12,7 +12,9 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
   (`identify-run.ts` is the record → upload → repeat loop, with its IO injected so it
   can be tested without a renderer; `useIdentify.ts` is the React wrapper around it; `store.ts` holds settings and the
   saved library; `api.ts` talks to the server; `theme.tsx` owns the light/dark palettes).
-  Path alias `@/` → `src/`.
+  Path alias `@/` → `src/`. It is also the website: `public/` (the page template, safety
+  net, 404 page and host configs the export copies into the site), `deploy/nginx.conf`,
+  `scripts/build-web.mjs`, and `e2e/` (the browser suite). See Website below.
 - `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
   Claude, `resolve.ts` Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
   cast, `stt.ts` optional speech-to-text, `sessions.ts` in-memory session store,
@@ -29,6 +31,8 @@ npm run typecheck                  # every workspace
 npm test                           # node:test in both workspaces; no network or API key
 npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)
 npm run check                      # lint, typecheck, test, test:conventions: the gate before a push
+npm run test:e2e                   # the website in Chromium: builds, serves and drives it
+TVSHAM_SERVER_URL=https://… npm run build:web --workspace apps/mobile   # the website, in apps/mobile/dist
 npm run server                     # tsx watch, port 8787
 npm run mobile                     # expo start
 cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
@@ -41,8 +45,9 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 - Claude is called via `@anthropic-ai/sdk` only (`recognize.ts`). Two calls per clip:
   vision + web search reasoning, then a `messages.parse` structured extraction.
 - Uploaded clips live under `apps/server/tmp/<session>-<n>` and are deleted after analysis.
-- No test can hit the real API. Verify changes with typecheck, the unit tests, and
-  `npx expo export` for the app bundle.
+- No test can hit the real API. Verify changes with typecheck, the unit tests,
+  `npx expo export` for the app bundle, and `npm run test:e2e` for the website (which
+  stands in for Claude and the outside world through `setClientForTests`/`setFetchForTests`).
 - App logic worth testing goes in a React-Native-free module (`palette.ts`,
   `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`, `shapes.ts`,
   `deadline.ts`); the `.tsx` files
@@ -208,6 +213,53 @@ elsewhere, because react-native-web's `Alert` is an empty stub), and the rule fo
 to ask is that the action destroys what the app cannot restore from inside itself:
 removing a saved item and clearing the recent list. The version in the "How it works"
 card is `Constants.expoConfig?.version` from `expo-constants`.
+
+## Website
+
+The app is also a website (README, "Run it as a website"). `scripts/build-web.mjs` runs
+`expo export --platform web --clear` with `TVSHAM_SERVER_URL` (required) and `WEB_BASE_URL`
+(optional), which `app.config.js` turns into `extra.serverUrl` and `experiments.baseUrl`
+(app.json comes through untouched when neither is set), then fills `TVSHAM_SERVER_ORIGIN`
+and `%BASE_URL%` into the `STAMPED` files (`index.html`, `404.html`, `_headers`,
+`.htaccess`) and refuses to finish with either left. `--clear` is load-bearing: Metro's
+transform cache does not key on the app config, and without it a second build kept the
+first one's server address under a policy that named another. The token is not a valid
+CSP source, so a site published without the build has, in effect, `connect-src 'none'`.
+
+- **One policy, five places**: `public/_headers`, `public/.htaccess`, `deploy/nginx.conf`,
+  the `<meta>` in `public/index.html` (less `frame-ancestors`) and the README's table.
+  `src/website.test.ts` holds them equal and pins every source; `e2e/web.mjs` loads the
+  build under `_headers` against a real server and fails on any violation, console error,
+  page error or request leaving the site. Each value was measured there by removing it:
+  `media-src blob:` (the picker reads a video's length through a `<video>`), each `img-src`
+  host (the result's pictures), `'self'` (the favicon and the header's back icon) and the
+  empty-string hash all fail the suite when dropped. A picture host added to `resolve.ts`
+  or `tmdb.ts` goes into all five.
+- **No `'unsafe-inline'`.** react-native-web inserts an empty `<style>` and fills it with
+  `insertRule`, which CSP does not govern, so the hash of the empty string is all
+  `style-src` needs beyond `'self'`. Nothing inline goes into `index.html` or `404.html`:
+  `site.css` and `guard.js` are files for that reason, and Trusted Types are enforced.
+- **On the web the server is the built one** (`pinServer` in `store.ts`, on hydrate and on
+  every update; Settings shows it read-only): a stored address from an earlier build is one
+  the policy refuses. **The token is memory only** (`TOKEN_IS_SAVED`): expo-secure-store has
+  no web implementation and `localStorage` is readable by every script on the origin.
+- **What a browser cannot do says so**: camera recording (expo-camera's web `recordAsync`
+  answers an empty file) is `WebCameraNotice`; the offline queue (expo-file-system has no
+  web implementation) is off (`CAN_QUEUE`), so a failed upload is an error card; a picked
+  File is held in `web-clips.ts` for its upload, because fetching its `blob:` address back
+  would need `blob:` in `connect-src`, and is released when the run ends.
+- Every route in `app/` is served as the one page by every host (`_redirects`,
+  `.htaccess`, `nginx.conf`, and a cache rule in `_headers`); the website test reads `app/`
+  and fails when one is missing. Each path gets `Cache-Control` from one `_headers` rule,
+  because Netlify and Cloudflare join a header two rules set.
+- The server's side is `API_HEADERS` in `apps/server/src/index.ts`, set by the outermost
+  middleware twice: on the context before the rest runs, because @hono/node-server builds a
+  HEAD's response from the GET one's original headers (set only afterwards, `curl -I` showed
+  none), and on the finished response for one built outside the context. `index.test.ts`
+  checks every kind of answer and the README, `http-headers.test.ts` checks them over a real
+  socket through the adapter, and the browser suite checks the preflight and the site's calls.
+- `.well-known/security.txt` expires on 2027-10-08 and the website test fails once it has:
+  renew it, a year ahead at most.
 
 ## Native configuration
 

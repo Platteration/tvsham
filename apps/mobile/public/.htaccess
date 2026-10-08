@@ -1,0 +1,49 @@
+# TVsham website: Apache 2.4 settings (mod_rewrite, mod_headers). Netlify and Cloudflare Pages read
+# _headers instead; nginx: see deploy/nginx.conf. The same values are in all of them, and in the
+# <meta> policy in index.html; src/website.test.ts fails when they differ, and _headers says what
+# each source is for. scripts/build-web.mjs fills in TVSHAM_SERVER_ORIGIN and the base path.
+
+Options -Indexes
+ServerSignature Off
+AddDefaultCharset utf-8
+DirectoryIndex index.html
+ErrorDocument 404 %BASE_URL%/404.html
+ErrorDocument 403 %BASE_URL%/404.html
+
+<IfModule mod_mime.c>
+  AddType text/javascript .js
+  AddType image/x-icon .ico
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # everything over https
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+  # never serve a dotfile, except the folder security.txt lives in
+  RewriteRule (^|/)\.(?!well-known/) - [R=404,L]
+  # the hosting files are not part of the site
+  RewriteRule ^(_headers|_redirects)$ - [R=404,L]
+  # the app's routes are one page: a visit or a reload at one gets index.html, which draws it
+  RewriteRule ^(settings|library|result)$ index.html [L]
+  # a folder with no page of its own is a 404, not a listing or a 403 that hints at one
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^.+$ - [R=404,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set Permissions-Policy "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Resource-Policy "same-origin"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  # the bundle and the assets carry a content hash in their names; everything else is revalidated
+  Header always set Cache-Control "no-cache"
+  <If "%{REQUEST_URI} =~ m#/(_expo/static|assets)/#">
+    Header always set Cache-Control "public, max-age=31536000, immutable"
+  </If>
+</IfModule>

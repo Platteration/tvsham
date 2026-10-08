@@ -1,0 +1,15 @@
+# TVsham website: rewrites and refusals for Netlify (Cloudflare Pages reads the 200 rules too, and
+# ignores 404 rules: there, publish only the build output, which holds nothing below but these
+# hosting files, and Cloudflare does not serve _headers or _redirects in any case).
+#
+# The app is one page with four routes. A visit or a reload at a route's address gets the page,
+# which then draws that route; every other missing address gets 404.html with a 404, rather than
+# the app with a 200, so a mistyped address and a missing script both say what they are.
+/settings   /index.html  200
+/library    /index.html  200
+/result     /index.html  200
+
+# The hosting files are not part of the site.
+/_headers    /404.html  404
+/_redirects  /404.html  404
+/.htaccess   /404.html  404

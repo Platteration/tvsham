@@ -1,0 +1,88 @@
+# TVsham website: response headers for Netlify and Cloudflare Pages, which read this file from the
+# published folder and do not serve it. Apache: see .htaccess. nginx: see deploy/nginx.conf. The
+# policy is also in index.html as a <meta> tag, for a host that sends no headers of its own.
+# The same values are in all of these, and src/website.test.ts fails when they differ.
+#
+# TVSHAM_SERVER_ORIGIN is filled in by scripts/build-web.mjs with the origin of the recognition
+# server the site is built for (TVSHAM_SERVER_URL). Left unfilled it is not a valid source, so the
+# browser ignores it and the site can reach nothing at all.
+#
+# The policy was measured, not copied: e2e/web.mjs drives the site with these headers on every
+# response, against a real server, and fails on any violation. What each source is for:
+#   script-src 'self'        the bundle and guard.js; nothing inline, no eval
+#   style-src 'self'         site.css
+#     'sha256-47DEQ…'        react-native-web adds its stylesheet as an empty <style> element and
+#                            fills it through insertRule, which the policy does not govern; this is
+#                            the hash of the empty string, so it admits that element and no inline
+#                            style with anything in it ('unsafe-inline' would admit them all)
+#   img-src 'self'           the favicon and expo-router's header icons
+#     https://upload.wikimedia.org  Wikipedia thumbnails      } the pictures the server's
+#     https://i.ytimg.com           YouTube thumbnails        } results point to (resolve.ts,
+#     https://image.tmdb.org        TMDB posters, logos, cast } tmdb.ts), and no other host
+#   media-src blob:          the picker reads a chosen video's length through a <video> on its
+#                            blob: address
+#   connect-src TVSHAM_SERVER_ORIGIN  the recognition server, and nothing else
+#   require-trusted-types-for 'script'; trusted-types 'none'
+#                            no string ever becomes HTML or script: React, react-native-web and
+#                            Expo Router run without creating a single Trusted Types policy
+# frame-ancestors 'none' and X-Frame-Options: DENY: the app is not meant to be embedded, so no other
+# site can frame it and steer its buttons.
+#
+# Referrer-Policy: no-referrer, because a site like this is one household's front end to its own
+# server, and its address is nothing the pages it links to need to learn.
+# Permissions-Policy turns off every feature the browser would otherwise grant: in a browser the app
+# records nothing (the camera tab says so), reads no sensor and plays nothing.
+#
+# Cache-Control: the bundle and the assets carry a content hash in their names, so a new build gets
+# new names and they can be kept for a year. Everything else is revalidated on every load. A header
+# two rules set is joined with a comma by both hosts, so every path gets Cache-Control from exactly
+# one rule below; the browser suite checks that on every response.
+
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+/_expo/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+/settings
+  Cache-Control: no-cache
+
+/library
+  Cache-Control: no-cache
+
+/result
+  Cache-Control: no-cache
+
+/404.html
+  Cache-Control: no-cache
+
+/site.css
+  Cache-Control: no-cache
+
+/guard.js
+  Cache-Control: no-cache
+
+/favicon.ico
+  Cache-Control: no-cache
+
+/robots.txt
+  Cache-Control: no-cache
+
+/.well-known/security.txt
+  Cache-Control: no-cache

@@ -175,10 +175,12 @@ describe("native posture", () => {
     // on an iPad. `false` is also the default; explicit so it cannot drift.
     assert.equal(appJson.expo.ios?.supportsTablet, false);
     assert.equal(appJson.expo.orientation, "portrait");
-    // No web target: CI exports Android only and the app records from a
-    // camera, so a `web` block (and the `web.bundler` pin that goes with one)
-    // would configure a bundle nothing builds or runs.
-    assert.equal(appJson.expo.web, undefined);
+    // The web target is the website (scripts/build-web.mjs, which CI's browser
+    // suite builds and drives): bundled by Metro, as the shared conventions pin
+    // wherever there is a web block; one page (`single`), which public/index.html
+    // templates and every host config rewrites the app's routes to; the app's
+    // icon as its favicon.
+    assert.deepEqual(appJson.expo.web, { bundler: "metro", output: "single", favicon: "./assets/icon.png" });
   });
 
   it("keeps the user's own record in Android backup, and the token out of it", async () => {

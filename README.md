@@ -6,7 +6,7 @@
 - a **YouTube video / Short**, **TikTok**, **Reel** → a link on the video's own platform, opened straight in that app, plus the creator's profile
 - anything you want to keep → **Save for later** in the app's library, mark as watched when you're done
 
-iOS and Android, built with Expo (React Native). Recognition runs on a small Node server you host yourself.
+iOS and Android, built with Expo (React Native), and the same app as a website. Recognition runs on a small Node server you host yourself.
 
 ```
 ┌──────────────────────┐   8 s clips (480p mp4)   ┌──────────────────────────────┐
@@ -77,7 +77,8 @@ Check it: `curl http://localhost:8787/health` →
 - Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS. A public `http:` address is warned about in Settings but not blocked, and Android permits the connection (its cleartext setting is all-or-nothing, and what a LAN server needs is a private IP literal, which Android's per-domain rules cannot express) while iOS refuses it — so on Android that configuration sends your clips and results in the clear. Use `https://` for anything off your own network.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
 - Decoding is bounded at both ends. What a clip claims about itself is read by one ffmpeg probe, and that probe is bounded before it runs: `MAX_STREAMS` caps how many decoders it may open at all, `PROBE_MEMORY_MB` caps the address space it may take, and it reads only the first 100 KB of the file instead of decoding frames from every stream to fill in what the container did not declare. That last one is the difference between 736 MB and 113 MB for a 1.4 MB upload carrying eight 8192x4608 streams. The pixel and duration budgets (`MAX_PIXELS`, `MAX_DURATION_SECONDS`) are then applied to what the probe reported — after that one bounded run and before any frame is extracted. Every ffmpeg run has a hard timeout, and the input is restricted to local files and to the container formats a phone records.
-- No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
+- No CORS headers are sent unless `CORS_ORIGIN` is set, and then only for that one origin: the website's, when you run it (see [Run it as a website](#run-it-as-a-website)). Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
+- Every answer carries the headers of an API, whatever it is (a result, a refusal, a 404, an error): `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`. Nothing it sends is a page, so nothing may run, be framed, be sniffed into another type, be embedded by another site or be kept by a cache on the way; the bodies are per session, and one of them carries the session key. `Strict-Transport-Security` belongs to the TLS proxy in front of it, since a browser ignores it over the plain HTTP the server itself speaks.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 #### Server configuration
@@ -92,7 +93,7 @@ Check it: `curl http://localhost:8787/health` →
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
 | `DAILY_CLIP_LIMIT` | `0` (off) | Clips one caller may have analysed per day, counted against the connecting address. In-memory, so it resets on restart. |
 | `TRUST_PROXY` | `0` (off) | How many proxies of your own stand in front of the server; `true` means one. The caller's address is then the `X-Forwarded-For` hop that many from the right, which the client cannot forge. A hop your proxy wrote a port onto (`203.0.113.9:54321`, `[2001:db8::1]:443` — Azure does this) is understood; one that is not an address at all is counted in the shared bucket, and the server warns once when that happens. Only set it behind proxies you control. |
-| `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. `*` is refused at startup: it would hand every page on the internet your Claude budget, and the cross-origin check would turn away every request the preflight had just allowed. |
+| `CORS_ORIGIN` | – | Browser origin allowed to call the server: the origin the website is served from (`https://watch.example.com`), when you run one. Unset means no CORS headers, which is right for the phone app. `*` is refused at startup: it would hand every page on the internet your Claude budget, and the cross-origin check would turn away every request the preflight had just allowed. |
 | `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
 | `MAX_PIXELS` | `9437184` | Largest frame the server will decode, and the most a clip's streams may total. Checked against what the probe read, so it bounds *extraction*; what bounds the probe is the row below and `PROBE_MEMORY_MB`. |
 | `MAX_STREAMS` | `8` | Streams one upload may declare — every stream, not only video. ffmpeg opens a decoder per stream while probing, so the count needs a bound that applies before the probe rather than after it. A phone records a video and an audio track plus a timecode or metadata track or two. |
@@ -168,6 +169,52 @@ A clip that cannot be uploaded is kept rather than lost: it is moved out of the 
 
 The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.
 
+### Run it as a website
+
+The app is a website too: the same screens, built for the browser by `expo export --platform web`, talking to the same server. Everything the phone app does on the phone, the page does in the browser; the server does what it always did. The browser cannot record from the camera, so there the camera tab says so and leads to the picker: choose a video saved on the device, such as a screen recording or the TV filmed with the camera app.
+
+```bash
+TVSHAM_SERVER_URL=https://tvsham.example.com npm run build:web --workspace apps/mobile   # writes apps/mobile/dist
+```
+
+- `TVSHAM_SERVER_URL` is the recognition server the site talks to. The build writes its origin into the site's Content-Security-Policy as the only address the page may call, and makes it the app's server address; Settings shows it and cannot change it, because the browser would refuse any other. Without it the build stops: a site with no server can identify nothing.
+- `WEB_BASE_URL` (optional) is the path when the site is not at the root of its origin: `/tvsham` for `example.com/tvsham/`. The host configs below are written for a site at the root; under a path, add the prefix to the paths in them.
+- On the server, set `CORS_ORIGIN` to the origin the site is served from, and set `APP_TOKEN`. The server answers the site's preflight for that origin and refuses every other.
+- Serve both over HTTPS. A page served over HTTPS cannot call an `http:` server (the browser blocks it as mixed content), and the policy upgrades the page's own requests to HTTPS.
+
+Publish `apps/mobile/dist`, the build's output, and never the repository: `.git/` holds its whole history. The output is the page, the bundle and its assets (content-hashed names), `404.html`, `site.css`, `guard.js`, `favicon.ico`, `robots.txt`, `.well-known/security.txt`, and the config file for each host (`_headers` and `_redirects` for Netlify and Cloudflare Pages, `.htaccess` for Apache; each host ignores the others', and each refuses to serve them). For nginx, copy `apps/mobile/deploy/nginx.conf` into the server's configuration and put the server's origin where it says `TVSHAM_SERVER_ORIGIN`. Each config redirects HTTP to HTTPS where it can, serves the app's routes (`/settings`, `/library`, `/result`) as the one page, refuses dotfiles (but `/.well-known/`) and the hosting files, lists no folders, and answers everything else with `404.html` and a 404.
+
+**Response headers.** The same set is in `_headers`, `.htaccess` and `deploy/nginx.conf`, and the policy is also in `index.html` as a `<meta>` tag (without `frame-ancestors`, which a meta tag cannot carry) for a host that sends no headers of its own. `apps/mobile/src/website.test.ts` fails when they differ, and the browser suite loads the site under them.
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'` | Only the site's own script runs, nothing inline and no eval; Trusted Types turn any string-to-HTML sink into an error. The style hash is that of the empty string: react-native-web adds an empty `<style>` and fills it through the CSSOM, and this admits that and no inline style with anything in it. Pictures come from the three hosts the server's results point to (Wikipedia, YouTube, TMDB); the picker reads a chosen video's length through a `blob:` address; the page calls the one server it was built for. Measured in Chromium against a real server by the browser suite, not copied. |
+| `X-Content-Type-Options` | `nosniff` | Files are what their type says. |
+| `X-Frame-Options` | `DENY` | With `frame-ancestors 'none'`: no other site can frame the app and steer its buttons. |
+| `Referrer-Policy` | `no-referrer` | The site is one household's front end to its own server; the pages it links to need not learn its address. |
+| `Permissions-Policy` | `accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()` | In a browser the app records nothing, reads no sensor and plays nothing, so every feature is off. |
+| `Cross-Origin-Opener-Policy` | `same-origin` | A page the app opens cannot reach back into it. |
+| `Cross-Origin-Resource-Policy` | `same-origin` | No other site can embed the site's files. |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | Browsers remember to use HTTPS. |
+| `Cache-Control` | `public, max-age=31536000, immutable` for `/_expo/static/` and `/assets/`; `no-cache` for everything else | The bundle and assets carry a content hash in their names, so a new build has new names; the page and everything named without a version is revalidated on every load, so a deploy never mixes one build's page with another's scripts. |
+
+**Give it an origin of its own.** The site keeps the library, the recent list and the preferences in the browser's `localStorage` under `tvsham.*` keys, and storage is per origin. On an origin shared with other apps (a GitHub Pages project site, `user.github.io/tvsham/`) every other app published there can read and overwrite them, and a script injected into any of them reaches them all. A domain or subdomain of its own avoids that. GitHub Pages also cannot send headers: there only the `<meta>` policy applies (no `frame-ancestors`, `X-Frame-Options`, `Permissions-Policy`, COOP, CORP or HSTS) and a reload at a route answers 404, so use a host that can (Netlify, Cloudflare Pages, Apache or nginx).
+
+**What the browser does differently.** It does not record from the camera (the camera tab says so). It keeps no clip for later when the server is out of reach: the error says so, and the video is still on the device to choose again. It never stores the access token: there is no keychain in a browser and `localStorage` is readable by every script on the origin, so the token lives in memory while the tab is open and is typed again after a reload, as Settings says beside the field. Vibration works where the browser can vibrate. If the bundle fails to load, or the browser is too old for it, `guard.js` (loaded first, a file of its own since nothing inline runs) shows a short note instead of an empty page; without JavaScript, the page says it needs it.
+
+**Launch checklist**, with `SITE` the site's address:
+
+```sh
+curl -sI http://SITE/ | head -1               # a 301 to https
+curl -sI https://SITE/ | grep -i -E 'content-security|strict-transport|nosniff|referrer|permissions|cache-control'
+curl -sI https://SITE/settings | head -1      # 200: a route of the app
+curl -sI https://SITE/.git/HEAD | head -1     # 404
+curl -sI https://SITE/_headers | head -1      # 404
+curl -sI https://SITE/nonexistent | head -1   # 404
+```
+
+Then open the site, Test connection in Settings, choose a video, and check that the browser console shows no Content Security Policy lines. Security problems are reported as `SECURITY.md` and `/.well-known/security.txt` say; that file expires on 8 October 2027 and the unit tests fail once it has, so renew it before then.
+
 ## Development
 
 ```bash
@@ -176,20 +223,35 @@ npm run typecheck         # all workspaces
 npm test                  # unit tests in both workspaces
 npm run test:conventions  # the shared repository conventions (CONVENTIONS.md)
 npm run check             # all of the above: the gate before a push
+npm run test:e2e          # the website in Chromium: builds it, serves it, drives it
+npm run test:all          # npm test, then the browser suite
 ```
 
 The server tests cover the ffmpeg pipeline, link resolution, TMDB enrichment, the
 recogniser's control flow against a fake client, and the HTTP routes. The app tests cover
 the pure layer: the record-and-upload loop against injected fakes, settings validation,
 result formatting, the offline-queue drop policy, and a contrast audit that holds every text pairing in both schemes and all four accents to
-WCAG AA.
+WCAG AA, and the website's hosting files: one policy in every place it is written, a cache
+lifetime for every file, every route served on every host, and the refusals.
 
-CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test and a Metro bundle of the app, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
+The browser suite (`apps/mobile/e2e/web.mjs`, Playwright and Chromium) builds the website for a
+real server it starts beside it, with Claude, Wikipedia, YouTube and TMDB stood in for, serves
+the build at a sub-path with the headers exactly as `_headers` writes them, and drives the main
+flow: open the site, test the connection with a token, choose a video, read the answer and its
+pictures, save it, find it again after a reload. It fails on any policy violation, console
+error, page error or request that leaves the site, then checks the 404 page, the refusals, the
+safety net and the page without JavaScript.
+
+CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test, a Metro bundle of the app for Android and the web and the browser suite, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
 
 ## Project layout
 
 ```
-apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker)
+apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker), also built as the website:
+  public/        the page template, safety net, 404 page and host configs, copied into the site
+  deploy/        nginx.conf, copied into a server's configuration by hand
+  scripts/       build-web.mjs builds the site; make-icons.mjs draws the icons
+  e2e/           the browser suite and the static host it serves the site through
 apps/server      Node 22 + Hono server (ffmpeg, @anthropic-ai/sdk)
 packages/shared  Types shared by both (Identification, RecognitionResult, ...)
 ```

@@ -91,11 +91,14 @@ describe("the settings contract", () => {
     // store.ts and motion.tsx import React Native, so this suite cannot run
     // them: what they decide lives in settings.ts, tested there, and this
     // pins by reading that they still defer to it. Hydrate cleans against
-    // the settings in force (`prev`), and both animations run only while
-    // motionRuns says so - a bare `!active || reduce` here would be a second
-    // copy of that decision with no test behind it.
+    // the settings in force (`prev`), the website's fixed server is laid over
+    // the result on hydrate and on every update (pinServer), and both
+    // animations run only while motionRuns says so - a bare `!active || reduce`
+    // here would be a second copy of that decision with no test behind it.
     const store = readFileSync(join(root, "src/store.ts"), "utf8");
-    assert.match(store, /settingsStore\.set\(\(prev\) => hydrateSettings\(savedSettings, token, prev\)\)/);
+    assert.match(store, /settingsStore\.set\(\(prev\) => pinServer\(hydrateSettings\(savedSettings, token, prev\), FIXED_SERVER\)\)/);
+    assert.match(store, /settingsStore\.set\(\(prev\) => pinServer\(cleanSettings\(\{ \.\.\.prev, \.\.\.patch \}, prev\), FIXED_SERVER\)\)/);
+    assert.match(store, /const FIXED_SERVER = Platform\.OS === "web" \? BUILT_IN_SERVER : null;/);
     const motion = readFileSync(join(root, "src/motion.tsx"), "utf8");
     assert.equal((motion.match(/motionRuns\(active, /g) ?? []).length, 2, "SonarRings and Breathing");
     // ...and `active` is only ever handed to it: two props (each named in

@@ -1,0 +1,5 @@
+# TVsham. Report a vulnerability privately, as SECURITY.md asks: a public issue is the wrong place.
+Contact: https://github.com/Platteration/tvsham/security/advisories/new
+Expires: 2027-10-08T00:00:00.000Z
+Preferred-Languages: en
+Policy: https://github.com/Platteration/tvsham/blob/HEAD/SECURITY.md

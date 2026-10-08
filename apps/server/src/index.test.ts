@@ -9,6 +9,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { CreateSessionResponse } from "@tvsham/shared";
 import { config } from "./config.js";
 import {
+  API_HEADERS,
   addressBucket,
   app,
   caller,
@@ -237,6 +238,62 @@ describe("http", () => {
       assert.equal(other.status, 403);
     } finally {
       (config as { corsOrigin: string | undefined }).corsOrigin = original;
+    }
+  });
+
+  it("sends the API's own headers on every answer, refusals and errors included", async () => {
+    // A browser reaches this server from the website's origin, and its bodies are per
+    // session: none of them may be framed, sniffed, embedded by another site or cached.
+    // Each request below ends in a different place - a route, the not-found answer, the
+    // Origin gate, the content-type check, the body limit, the token gate - because a
+    // header set inside one handler is a header every other one forgets.
+    assert.deepEqual(API_HEADERS, {
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Cache-Control": "no-store",
+    });
+    const json = { "content-type": "application/json" };
+    const answers: Array<[string, Response, number]> = [
+      ["health", await app.request("/health"), 200],
+      ["a route that does not exist", await app.request("/no-such-route"), 404],
+      ["an unknown session", await app.request("/sessions/nope", { headers: { "x-session-key": "nope" } }), 404],
+      [
+        "another origin",
+        await app.request("/sessions", { method: "POST", headers: { ...json, origin: "https://evil.example" }, body: "{}" }),
+        403,
+      ],
+      ["a form encoding", await app.request("/sessions", { method: "POST", headers: { "content-type": "text/plain" }, body: "x" }), 415],
+      ["an oversized body", await app.request("/sessions", { method: "POST", headers: json, body: "x".repeat(8 * 1024) }), 413],
+    ];
+    const created = await app.request("/sessions", { method: "POST", headers: json, body: '{"source":"screen"}' });
+    answers.push(["a new session", created, 201]);
+    const { sessionId, sessionKey } = (await created.json()) as CreateSessionResponse;
+    answers.push(["reading it", await app.request(`/sessions/${sessionId}`, { headers: { "x-session-key": sessionKey } }), 200]);
+    answers.push([
+      "ending it",
+      await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: { "x-session-key": sessionKey } }),
+      204,
+    ]);
+    const original = config.appToken;
+    (config as { appToken?: string }).appToken = "a-real-token-of-sufficient-length";
+    try {
+      answers.push(["a wrong token", await app.request("/sessions", { method: "POST", headers: { authorization: "Bearer no" } }), 401]);
+    } finally {
+      (config as { appToken?: string }).appToken = original;
+    }
+    for (const [what, res, status] of answers) {
+      assert.equal(res.status, status, `${what} reaches the branch it is here for`);
+      for (const [name, value] of Object.entries(API_HEADERS)) {
+        assert.equal(res.headers.get(name), value, `${what}: ${name}`);
+      }
+    }
+    // And the README says what they are, in the words the server sends.
+    const readme = await fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
+    for (const [name, value] of Object.entries(API_HEADERS)) {
+      assert.ok(readme.includes(`\`${name}: ${value}\``), `README.md quotes ${name}: ${value}`);
     }
   });
 

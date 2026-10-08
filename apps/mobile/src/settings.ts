@@ -221,6 +221,18 @@ export function hydrateSettings(saved: unknown, token: string | undefined, prev:
 }
 
 /**
+ * The settings with the server address the build fixed, when it fixed one.
+ * The website is built for one recognition server (TVSHAM_SERVER_URL), and its
+ * Content-Security-Policy lets the page reach that origin and no other, so an
+ * address from storage - an earlier build's, or one written by anything else
+ * on the origin - or typed into Settings would be a server the browser refuses.
+ * `fixed` is null where the user chooses the server: on a phone.
+ */
+export function pinServer(settings: Settings, fixed: string | null): Settings {
+  return fixed === null ? settings : { ...settings, serverUrl: fixed };
+}
+
+/**
  * Whether a decorative animation runs: only while what it decorates is active
  * and motion is not reduced. SonarRings and Breathing both decide through
  * this, in the effect that starts the loop and in the render that draws it.

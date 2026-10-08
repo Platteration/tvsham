@@ -6,10 +6,12 @@ import {
   type SessionHandle,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
+import { Platform } from "react-native";
 import { TimeoutError, withDeadline } from "./deadline";
 import { canSendTokenTo } from "./settings";
 import { cleanRecognitionResult, cleanSessionHandle } from "./shapes";
 import { getDeviceId, getSettings } from "./store";
+import { clipFileFor, clipFileName } from "./web-clips";
 
 export class ApiError extends Error {
   constructor(
@@ -131,23 +133,27 @@ function sessionHeaders(
 
 /**
  * Upload one recorded clip. React Native's fetch accepts `{ uri, name, type }`
- * objects in FormData and streams the file from disk.
+ * objects in FormData and streams the file from disk; in a browser the part is
+ * the picked File itself, held in web-clips.ts under the address it was picked as.
  */
 export async function uploadClip(
   session: SessionHandle,
   fileUri: string,
   opts: { mimeType?: string; signal?: AbortSignal; clipKey?: string } = {},
 ): Promise<RecognitionResult> {
-  const name = fileUri.split("/").pop() || "clip.mp4";
-  const type = opts.mimeType ?? (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4");
+  const picked = Platform.OS === "web" ? clipFileFor(fileUri) : undefined;
+  if (Platform.OS === "web" && !picked) throw new ApiError("That video is no longer open in this page. Choose it again.");
+  const name = picked ? clipFileName(picked, "clip.mp4") : fileUri.split("/").pop() || "clip.mp4";
+  const type = opts.mimeType ?? (picked?.type || (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4"));
   // Sent as a header as well as a field so the server can recognise a retry of a
   // clip it already analysed before it buffers the body again.
   const clipKey = (opts.clipKey ?? fileUri).replace(/[^A-Za-z0-9:_-]/g, "").slice(-128) || "clip";
   const base = baseUrl();
   const send = async () => {
     const form = new FormData();
+    if (picked) form.append("clip", picked, name);
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
-    form.append("clip", { uri: fileUri, name, type });
+    else form.append("clip", { uri: fileUri, name, type });
     form.append("clipKey", clipKey);
     const res = await withDeadline(TIMEOUTS.upload, "Sending the clip", opts.signal, (signal) =>
       fetch(`${base}/sessions/${session.sessionId}/clips`, {

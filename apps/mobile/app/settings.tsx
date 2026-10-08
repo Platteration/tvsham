@@ -7,7 +7,7 @@ import { health } from "@/api";
 import { confirmAction } from "@/confirm";
 import { isSafeWebUrl } from "@/format";
 import { APPEARANCE_NAMES, REDUCE_MOTION_NAMES, serverUrlWarning, type ReduceMotion } from "@/settings";
-import { resetSettings, updateSettings, useSettings } from "@/store";
+import { TOKEN_IS_SAVED, resetSettings, updateSettings, useSettings } from "@/store";
 import { ACCENTS, ACCENT_NAMES, makeStyles, radius, space, useTheme, type AccentName, type Appearance } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
 
@@ -81,17 +81,32 @@ export default function SettingsScreen() {
             The app sends short clips to your own TVsham server, which runs the recognition and looks up Wikipedia and YouTube. See the README for how to run one.
           </Muted>
           <Text style={styles.label}>Server URL</Text>
-          <TextInput
-            value={serverUrl}
-            onChangeText={setServerUrl}
-            placeholder="http://192.168.1.20:8787"
-            placeholderTextColor={c.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            style={styles.input}
-            onBlur={() => void save()}
-          />
+          {Platform.OS === "web" ? (
+            // The website is built for one server, and its Content-Security-Policy lets the page
+            // reach that one alone: an address typed here would be refused by the browser.
+            <>
+              <Text style={styles.fixedValue} selectable>
+                {settings.serverUrl || "None"}
+              </Text>
+              <Muted style={{ marginTop: space.xs }}>
+                {settings.serverUrl
+                  ? "This website was built for this server, and the browser lets it talk to no other."
+                  : "This website was built without a server address, so it cannot identify anything. Rebuild it with TVSHAM_SERVER_URL set, as the README describes."}
+              </Muted>
+            </>
+          ) : (
+            <TextInput
+              value={serverUrl}
+              onChangeText={setServerUrl}
+              placeholder="http://192.168.1.20:8787"
+              placeholderTextColor={c.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              style={styles.input}
+              onBlur={() => void save()}
+            />
+          )}
           {urlWarning ? <Text style={[styles.status, { color: c.warning }]}>{urlWarning}</Text> : null}
           <Text style={styles.label}>Access token (optional)</Text>
           <TextInput
@@ -105,6 +120,11 @@ export default function SettingsScreen() {
             style={styles.input}
             onBlur={() => void save()}
           />
+          {TOKEN_IS_SAVED ? null : (
+            <Muted style={{ marginTop: space.xs }}>
+              In a browser the token is kept only while this tab is open. It is never saved, so type it again after a reload.
+            </Muted>
+          )}
           <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.lg }}>
             <Button label="Save" variant="secondary" onPress={() => void save()} style={{ flex: 1 }} />
             <Button label="Test connection" loading={testing} onPress={() => void test()} style={{ flex: 1 }} />
@@ -244,6 +264,7 @@ const useStyles = makeStyles((c) => ({
   container: { padding: space.lg, gap: space.lg },
   label: { color: c.muted, fontSize: 13, fontWeight: "600", marginTop: space.lg, marginBottom: space.xs },
   rowLabel: { color: c.text, fontSize: 16, fontWeight: "600" },
+  fixedValue: { color: c.text, fontSize: 16, paddingVertical: space.xs },
   input: {
     backgroundColor: c.surfaceAlt,
     color: c.text,
