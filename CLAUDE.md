@@ -15,8 +15,9 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
   Path alias `@/` → `src/`. It is also the website: `public/` (the page template, safety
   net, 404 page and host configs the export copies into the site), `deploy/nginx.conf`,
   `scripts/build-web.mjs`, and `e2e/` (the browser suite). See Website below.
-- `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
-  Claude, `resolve.ts` Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
+- `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `form.ts` what a clip upload's
+  body may be before it is parsed, `media.ts` ffmpeg, `recognize.ts` Claude, `resolve.ts`
+  Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
   cast, `stt.ts` optional speech-to-text, `sessions.ts` in-memory session store,
   `limiter.ts` concurrency, `usage.ts` the daily cap, `eval/` an offline accuracy
   harness (`npm run eval --workspace apps/server`).
@@ -143,6 +144,19 @@ will pass typecheck and tests but reopen the hole.
   for the upload whatever it answers. One caller gets `MAX_UPLOADS_PER_CALLER` of those
   slots, because a body is only released when all of it has arrived and nothing obliges
   a client to send it.
+- **Bound the form before it is parsed, not only its size.** The parser behind
+  `parseBody` spends a native search on a file's bytes but JavaScript objects on every
+  part, header line and urlencoded pair, in one synchronous run: within the 80 MB cap,
+  a body of nothing but tiny fields held the event loop for 7 to 15 s, and was answered
+  "missing `clip`" before it spent a unit of the daily cap or a clip of the session, so
+  it could be repeated for ever. `receiveClip` therefore takes `multipart/form-data`
+  alone (415 otherwise), with the boundary read only where it has one reading
+  (`clipFormBoundary`), and `clipFormProblem` counts every `CRLF--boundary` in the body
+  (a superset of the parts the parser can make; at most `MAX_FORM_PARTS`) and requires
+  a blank line within `MAX_PART_HEADER_BYTES` of each (the parser reads a part's headers
+  no further than that). `form.test.ts` holds the bound against Node's real parser with
+  a fuzz that reaches it from both sides; a scan that skips a delimiter inside a header
+  block passes every hand-written case and fails that one.
 - **ffmpeg chooses the demuxer from the content, not from the name.** `inputGuards()`
   carries `-format_whitelist` as well as `-protocol_whitelist`: an upload saved as
   clip.mp4 that begins `ffconcat version 1.0` is opened by the concat demuxer, which

@@ -92,6 +92,65 @@ describe("http", () => {
     assert.equal(res.status, 400);
   });
 
+  it("takes a clip as multipart/form-data and refuses every other encoding unparsed", async () => {
+    // Parsed whole, 80 MB of urlencoded pairs held the event loop for 12 s and
+    // took a gigabyte, and spent nothing a caller is limited by (form.ts).
+    const { sessionId, auth } = await newSession();
+    const send = (type: string | undefined, body: string | Blob) =>
+      app.request(`/sessions/${sessionId}/clips`, {
+        method: "POST",
+        headers: { ...auth, ...(type ? { "content-type": type } : {}) },
+        body,
+      });
+    for (const [type, body] of [
+      ["application/x-www-form-urlencoded", "clip=x&clipKey=k&" + "a=&".repeat(10_000)],
+      ["text/plain;charset=UTF-8", "clip"],
+      ["multipart/form-data; charset=utf-8; boundary=x", "--x--\r\n"],
+      [undefined, new Blob([new Uint8Array(2048)])],
+    ] as const) {
+      const res = await send(type, body);
+      assert.equal(res.status, 415, `${type}: ${res.status}`);
+      assert.deepEqual(await res.json(), { error: "expected multipart/form-data" });
+    }
+    await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: auth });
+  });
+
+  it("refuses a clip form bigger in structure than an upload, before the parser builds it", async () => {
+    // A clip and its key are two fields with a few hundred bytes of headers. A
+    // body of thousands of empty fields, or of one field with a megabyte of
+    // header lines, is work for the parser and nothing else, and is answered
+    // before it is parsed.
+    const { sessionId, auth } = await newSession();
+    const clip = () => new Blob([new Uint8Array(4096).fill(7)], { type: "video/mp4" });
+    const many = new FormData();
+    many.set("clip", clip(), "clip.mp4");
+    for (let i = 0; i < 2000; i++) many.set(`f${i}`, "");
+    const crowded = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", headers: auth, body: many });
+    assert.equal(crowded.status, 400);
+    assert.deepEqual(await crowded.json(), { error: "more than 8 form fields" });
+
+    const b = "B0undary";
+    const runOn = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { ...auth, "content-type": `multipart/form-data; boundary=${b}` },
+      body:
+        `--${b}\r\nContent-Disposition: form-data; name="clip"; filename="clip.mp4"\r\n` +
+        "X: y\r\n".repeat(200_000) +
+        `\r\n${"v".repeat(2048)}\r\n--${b}--\r\n`,
+    });
+    assert.equal(runOn.status, 400);
+    assert.deepEqual(await runOn.json(), { error: "a form field's headers run on, or never end" });
+
+    // Neither was counted as a clip of the session.
+    const state = (await (await app.request(`/sessions/${sessionId}`, { headers: auth })).json()) as {
+      secondsAnalysed: number;
+      analysing: boolean;
+    };
+    assert.equal(state.secondsAnalysed, 0);
+    assert.equal(state.analysing, false);
+    await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: auth });
+  });
+
   it("does not analyse a clip twice when the same clipKey is re-sent", async () => {
     const bin = await ffmpegBinary();
     assert.ok(bin);

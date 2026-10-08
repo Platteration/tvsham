@@ -19,6 +19,7 @@ import {
   type RecognitionResult,
 } from "@tvsham/shared";
 import { config } from "./config.js";
+import { clipFormBoundary, clipFormProblem } from "./form.js";
 import { Limiter } from "./limiter.js";
 import { assertDecodable, extractAudio, extractFrames, ffmpegBinary } from "./media.js";
 import { recogniseWithEscalation } from "./recognize.js";
@@ -470,7 +471,9 @@ function releaseUploadSlot(billTo: string): void {
  * caller has quota left, and whether there is room to hold another body in
  * memory. Registered ahead of the body-limit middleware, which is what makes
  * "before the body is read" true for an upload that arrives without a
- * Content-Length as well as one that carries it.
+ * Content-Length as well as one that carries it. What the body says it is - its
+ * Content-Type - is checked in receiveClip instead, after the size cap and
+ * before anything parses it, so that an oversized upload is still a 413.
  */
 async function admitClip(c: Context<AppEnv, "/sessions/:id/clips">, next: Next) {
   // Read now, while the socket is still open: the work below runs after a queue
@@ -530,6 +533,15 @@ app.post("/sessions/:id/clips", async (c) => {
 
 /** The rest of the upload: everything from here on holds the clip in memory. */
 async function receiveClip(c: Context, s: Session, billTo: string, headerKey: string | undefined) {
+  // The one encoding this route takes, and a form no bigger in structure than an
+  // upload is, checked before the parser sees a byte (form.ts says why: parsed
+  // whole, a body of nothing but tiny fields held the event loop for seconds).
+  // The scan reads the body Hono then hands parseBody, which it keeps, so
+  // nothing is read or held twice.
+  const boundary = clipFormBoundary(c.req.header("content-type"));
+  if (!boundary) return c.json({ error: "expected multipart/form-data" }, 415);
+  const problem = clipFormProblem(new Uint8Array(await c.req.arrayBuffer()), boundary);
+  if (problem) return c.json({ error: problem }, 400);
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);

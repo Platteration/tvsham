@@ -79,7 +79,7 @@ Check it: `curl http://localhost:8787/health` →
 - Decoding is bounded at both ends. What a clip claims about itself is read by one ffmpeg probe, and that probe is bounded before it runs: `MAX_STREAMS` caps how many decoders it may open at all, `PROBE_MEMORY_MB` caps the address space it may take, and it reads only the first 100 KB of the file instead of decoding frames from every stream to fill in what the container did not declare. That last one is the difference between 736 MB and 113 MB for a 1.4 MB upload carrying eight 8192x4608 streams. The pixel and duration budgets (`MAX_PIXELS`, `MAX_DURATION_SECONDS`) are then applied to what the probe reported — after that one bounded run and before any frame is extracted. Every ffmpeg run has a hard timeout, and the input is restricted to local files and to the container formats a phone records.
 - No CORS headers are sent unless `CORS_ORIGIN` is set, and then only for that one origin: the website's, when you run it (see [Run it as a website](#run-it-as-a-website)). Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
 - Every answer carries the headers of an API, whatever it is (a result, a refusal, a 404, an error): `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`. Nothing it sends is a page, so nothing may run, be framed, be sniffed into another type, be embedded by another site or be kept by a cache on the way; the bodies are per session, and one of them carries the session key. `Strict-Transport-Security` belongs to the TLS proxy in front of it, since a browser ignores it over the plain HTTP the server itself speaks.
-- Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
+- Uploads are capped at 80 MB and rejected before they are buffered. A clip is taken as `multipart/form-data` and nothing else (any other `Content-Type` is a 415), with at most 8 fields and at most 8 KB of headers opening each, checked before the form is parsed: parsed whole, an 80 MB body of nothing but tiny fields, header lines or urlencoded pairs held the server's event loop for 7 to 15 seconds and spent nothing a caller is limited by. Clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 #### Server configuration
 
@@ -123,7 +123,7 @@ Check it: `curl http://localhost:8787/health` →
 | --- | --- | --- | --- |
 | `GET` | `/health` | – | `HealthResponse` |
 | `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId, sessionKey }` |
-| `POST` | `/sessions/:id/clips` | multipart, field `clip` (mp4/mov/webm) | `RecognitionResult` for *all* clips so far |
+| `POST` | `/sessions/:id/clips` | `multipart/form-data` (415 otherwise), field `clip` (mp4/mov/webm), at most 8 fields | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
 
