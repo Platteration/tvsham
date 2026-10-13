@@ -2,10 +2,13 @@
   // What `npm run typecheck` checks: tsconfig.json's settings over all of src, the tests
   // and their tooling (src/testing/) included. tsconfig.json leaves those out only so that the
   // build does not compile them into dist; tsx strips their types at run time, so nothing else
-  // checks them. The kit (kit/) is checked by tsconfig.kit.json.
+  // checks them. The kit's declarations (kit/*.d.ts, what src/ imports it through) are root
+  // files here; its JavaScript is checked by tsconfig.kit.json, since a .d.ts given as a root
+  // file beside its .js keeps tsc from checking the .js (measured: 17 kit files became 9).
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true
   },
+  "include": ["src", "kit/*.d.ts"],
   "exclude": []
 }
