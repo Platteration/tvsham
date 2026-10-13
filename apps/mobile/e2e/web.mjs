@@ -418,7 +418,10 @@ try {
     const hook = await fetch(`${APP_URL}api/webhooks/stripe`, { method: "POST", headers: { "stripe-signature": delivery.signature }, body: delivery.body });
     assert.equal(hook.status, 200);
     await p.getByText("Thank you — Sunset accent is unlocked.").waitFor({ timeout: 20_000 });
-    assert.equal(await p.evaluate(() => location.search), "", "the purchase is taken out of the address");
+    // Through the router, which is ready a moment after the first frame (account-ui.tsx), so the
+    // address is waited for: when the webhook has landed before the page asks, the thank-you can
+    // come first (seen in CI).
+    await p.waitForFunction(() => location.search === "", null, { timeout: 5_000 });
     await p.getByRole("button", { name: "Dismiss" }).click();
 
     // ...and stays out of it when the router writes the address again, coming back to this screen.
@@ -459,7 +462,7 @@ try {
     // A sign-in that does not complete says so on the site, once.
     await p.goto(`${APP_URL}api/auth/google/callback?code=forged&state=forged`);
     await p.getByText("Sign-in didn't complete.").waitFor();
-    assert.equal(await p.evaluate(() => location.search), "");
+    await p.waitForFunction(() => location.search === "", null, { timeout: 5_000 });
 
     // The policy lets the page reach its own site and the server, and nothing else.
     expectRefusedConnect = "https://example.com/";
