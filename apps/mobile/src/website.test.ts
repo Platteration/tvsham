@@ -194,7 +194,9 @@ describe("the website's headers", () => {
     ]);
     assert.deepEqual(csp.get("default-src"), ["'none'"]);
     assert.deepEqual(csp.get("script-src"), ["'self'"]);
-    assert.deepEqual(csp.get("connect-src"), [web.SERVER_ORIGIN_TOKEN], "connect-src is the server the build names, alone");
+    // The site's own api/ (the account and the shop, which the server answers through the site's
+    // proxy) and the recognition server the build names: nothing else.
+    assert.deepEqual(csp.get("connect-src"), ["'self'", web.SERVER_ORIGIN_TOKEN], "connect-src is the site itself and the server the build names");
     for (const name of ["base-uri", "form-action", "object-src", "frame-ancestors"]) assert.deepEqual(csp.get(name), ["'none'"], name);
     assert.deepEqual(csp.get("require-trusted-types-for"), ["'script'"]);
     assert.deepEqual(csp.get("trusted-types"), ["'none'"]);
@@ -329,6 +331,38 @@ describe("the website's files", () => {
     );
     // A folder with no page of its own is a 404, not a listing.
     assert.match(apache, /^ {2}RewriteCond %\{REQUEST_FILENAME\} -d\n {2}RewriteRule \^\.\+\$ - \[R=404,L\]$/m);
+  });
+
+  it("hand the account's api/ to the recognition server on nginx, and nothing else", () => {
+    // The sign-in is a cookie of the site's origin, so the page reaches the account on its own
+    // origin: nginx proxies /api/ to the server and serves every other path from the folder.
+    const nginx = read("deploy/nginx.conf");
+    const blocks = [...nginx.matchAll(/^ {4}location (\S+(?: \S+)?) \{\n([\s\S]*?)^ {4}\}$/gm)];
+    const api = blocks.filter((m) => m[1] === "^~ /api/");
+    assert.equal(api.length, 1, "one location for /api/, and ^~ so no regular expression above takes it");
+    const directives = api[0]![2]!
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+    assert.deepEqual(directives, [
+      "proxy_pass http://127.0.0.1:8787;",
+      "proxy_http_version 1.1;",
+      'proxy_set_header Connection "";',
+      "client_max_body_size 1m;",
+      "proxy_read_timeout 30s;",
+      `add_header Strict-Transport-Security "${new Map(headersRule("/*")).get("Strict-Transport-Security")}" always;`,
+    ]);
+    // No URI on proxy_pass: the path reaches the server as the browser sent it, and the server
+    // answers below APP_URL's path. Its one add_header keeps the server block's away from the
+    // API's answers, which carry the server's own; it is the server block's HSTS, as written there.
+    assert.ok(nginx.split("\n").includes(`    add_header Strict-Transport-Security "${new Map(headersRule("/*")).get("Strict-Transport-Security")}" always;`));
+    // Every other location sets no header of its own, so it keeps the server block's.
+    for (const m of blocks.filter((b) => b[1] !== "^~ /api/")) assert.doesNotMatch(m[2]!, /add_header/, `location ${m[1]}`);
+    for (const line of nginx.split("\n").filter((l) => /^\s+location /.test(l) && l.includes("{") && l.includes("}"))) {
+      assert.doesNotMatch(line, /add_header/, line.trim());
+    }
+    // Apache cannot proxy from a .htaccess; it says what the virtual host needs instead.
+    assert.match(read("public/.htaccess"), /^# ProxyPass "\/api\/" "http:\/\/127\.0\.0\.1:8787\/api\/" with mod_proxy and mod_proxy_http\.$/m);
   });
 
   it("publish the site and nothing of the repository's", () => {

@@ -16,6 +16,12 @@ services:
       - apps/server/.env
     environment:
       - PORT=8787
+    volumes:
+      # The website's account and shop (apps/server/src/account.ts; off until APP_URL and
+      # the rest are set in .env): the sessions and the purchases Stripe's webhook
+      # recorded, in KIT_DATA_DIR under this mount. A named volume, so a purchase outlives
+      # the container, and one container per volume: one process writes the records.
+      - account:/var/lib/tvsham
     # An upload is held in memory while it is analysed (MAX_UPLOADS_IN_FLIGHT
     # bounds how many at once, at roughly twice the clip size each), so a burst
     # of large clips should meet a limit on this container rather than the
@@ -32,3 +38,6 @@ services:
     security_opt:
       - "no-new-privileges:true"
     restart: unless-stopped
+
+volumes:
+  account:

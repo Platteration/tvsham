@@ -23,7 +23,10 @@
 #     https://image.tmdb.org        TMDB posters, logos, cast } tmdb.ts), and no other host
 #   media-src blob:          the picker reads a chosen video's length through a <video> on its
 #                            blob: address
-#   connect-src TVSHAM_SERVER_ORIGIN  the recognition server, and nothing else
+#   connect-src 'self'       the site's own api/: the account and the shop, which the recognition
+#                            server answers through the site's reverse proxy (deploy/nginx.conf);
+#                            Google and Stripe are top-level navigations, which CSP does not govern
+#     TVSHAM_SERVER_ORIGIN   the recognition server; nothing else
 #   require-trusted-types-for 'script'; trusted-types 'none'
 #                            no string ever becomes HTML or script: React, react-native-web and
 #                            Expo Router run without creating a single Trusted Types policy
@@ -48,7 +51,7 @@
 # and nginx 1.24).
 
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src 'self' TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Referrer-Policy: no-referrer

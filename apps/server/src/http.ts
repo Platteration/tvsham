@@ -10,6 +10,15 @@ export function setFetchForTests(f: FetchLike | null): void {
 const UA = "TVsham/0.1 (https://github.com/Platteration/tvsham)";
 
 /**
+ * The way out for the account and the shop (kit/, through account.ts): every call the kit makes
+ * to Google and Stripe goes through the same injectable implementation as the rest, so no test
+ * reaches either. Handed on as it is: the kit sets its own headers, deadline and redirect mode.
+ */
+export function outbound(input: string, init?: RequestInit): Promise<Response> {
+  return impl(input, init);
+}
+
+/**
  * POST a multipart body and hand back the raw response, through the same
  * injectable implementation as getJson so tests never reach the network.
  *

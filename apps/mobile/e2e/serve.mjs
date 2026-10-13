@@ -17,7 +17,12 @@
 //    (public/_headers, "Cache-Control").
 //  - Paths in both files are relative to the site's root, wherever the site is mounted: the
 //    folder is served under `base` the way a host serves a publish folder at a path.
-import { createServer } from "node:http";
+//  - With `api`, the one thing that is not a file: everything under `<base>/api/` goes to the
+//    recognition server as deploy/nginx.conf's `location ^~ /api/` sends it - the path unchanged,
+//    the server's answer as it gave it, with only the header that location adds - so the website's
+//    account and shop are on the site's own origin. Without it, `<base>/api/config` is a missing
+//    file like any other, which is what a static host answers.
+import { createServer, request as forward } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 
@@ -101,10 +106,32 @@ function fileFor(dir, sitePath) {
 }
 
 /**
- * The request handler for `dir` served at `base`. `log` records every request as
- * { method, path, status }.
+ * Hands a request to the recognition server at `origin` as nginx's proxy_pass with no URI does:
+ * the same method, path, query, headers and body, and the answer back as it came, every
+ * Set-Cookie included, with `extra` (the location's own add_header lines) on top.
  */
-export function siteHandler({ dir, base = "", log = [] }) {
+function proxy(origin, extra, req, res, done) {
+  const target = new URL(req.url ?? "/", origin);
+  const upstream = forward(target, { method: req.method, headers: { ...req.headers, host: target.host } }, (answer) => {
+    const headers = { ...answer.headers };
+    for (const [name, value] of extra) headers[name.toLowerCase()] = value;
+    res.writeHead(answer.statusCode ?? 502, headers);
+    answer.pipe(res);
+    answer.on("end", () => done(answer.statusCode ?? 502));
+  });
+  upstream.on("error", () => {
+    if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+    res.end("bad gateway");
+    done(502);
+  });
+  req.pipe(upstream);
+}
+
+/**
+ * The request handler for `dir` served at `base`. `log` records every request as
+ * { method, path, status }. `api` ({ origin, headers }) proxies `<base>/api/` there.
+ */
+export function siteHandler({ dir, base = "", log = [], api = null }) {
   const rules = parseHeaders(readFileSync(join(dir, "_headers"), "utf8"));
   const redirects = parseRedirects(readFileSync(join(dir, "_redirects"), "utf8"));
   return (req, res) => {
@@ -128,6 +155,10 @@ export function siteHandler({ dir, base = "", log = [] }) {
       // Outside the mount: what the host's root holds, which is not this site.
       res.writeHead(404, { "Content-Type": "text/plain" }).end("outside the site");
       log.push({ method: req.method, path: pathname, status: 404 });
+      return;
+    }
+    if (api && pathname.startsWith(`${base}/api/`)) {
+      proxy(api.origin, api.headers ?? [], req, res, (status) => log.push({ method: req.method, path: pathname, status }));
       return;
     }
     const sitePath = pathname.slice(base.length) || "/";

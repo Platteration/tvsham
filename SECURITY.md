@@ -30,8 +30,14 @@ well: a way to run script or load a resource the Content-Security-Policy should
 forbid; hosting settings in `apps/mobile/public/_headers`, `_redirects`, `.htaccess`
 or `apps/mobile/deploy/nginx.conf` that are wrong or incomplete; and anything that
 lets the site send a clip, the access token or a result anywhere but the server it
-was built for. A deployed site's `/.well-known/security.txt` points to this page;
-its `Expires` date is renewed every year.
+was built for. Where the server's website account and shop are configured (README,
+"The website's account and shop"): signing in as someone else, keeping a session past
+sign-out or account deletion, unlocking an accent pack Stripe's signed webhook did not
+grant, or reaching `/api/` with a request the account's own checks should refuse. The
+shared kit those rest on (`apps/server/kit/`) is copied byte for byte from one canonical
+copy into several of the owner's repositories, so a finding in it is fixed there. An accent
+drawn by editing the page is a cosmetic, not a finding. A deployed site's
+`/.well-known/security.txt` points to this page; its `Expires` date is renewed every year.
 
 Out of scope: vulnerabilities in third-party dependencies that are already
 public and have an upstream fix, findings that require an attacker to already

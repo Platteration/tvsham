@@ -70,6 +70,7 @@ describe("docker compose", () => {
  * with every one of those, so they are read here.
  */
 describe("the server image", () => {
+  const compose = readFileSync(composePath, "utf8");
   // One instruction per entry: continuation lines joined, comments dropped.
   const instructions = readFileSync(dockerfilePath, "utf8")
     .replace(/\\\n/g, " ")
@@ -119,6 +120,28 @@ describe("the server image", () => {
         );
       }
     }
+  });
+
+  it("carries the kit the server mounts, and a place for its records that outlives the container", () => {
+    // dist/account.js imports ../kit/app.js, so the kit sits beside dist in the image, as it is
+    // in the repository; a build that left it out compiles and starts nowhere.
+    const copied = runtimeStage.filter((line) => /^COPY\b/.test(line)).map((line) => line.split(/\s+/).filter((word) => !word.startsWith("--")).slice(1));
+    assert.ok(
+      copied.some(([from, to]) => from === "/app/apps/server/kit" && to === "./apps/server/kit"),
+      "the runtime stage copies apps/server/kit beside apps/server/dist",
+    );
+    // KIT_DATA_DIR is under a directory the image hands the node user, which compose mounts as a
+    // named volume: a fresh volume takes that directory's owner, so the unprivileged process can
+    // write its records there, and they survive the container being recreated.
+    const env = runtimeStage.find((line) => /^ENV\b/.test(line)) ?? "";
+    const dataDir = /\bKIT_DATA_DIR=(\S+)/.exec(env)?.[1];
+    assert.equal(dataDir, "/var/lib/tvsham/account");
+    assert.ok(
+      runtimeStage.some((line) => /^RUN mkdir -p .*\/var\/lib\/tvsham\b.*&& chown node:node .*\/var\/lib\/tvsham\b/.test(line)),
+      "the image makes the records' parent directory the node user's",
+    );
+    assert.match(compose, /^ {6}- account:\/var\/lib\/tvsham$/m, "compose mounts a named volume there");
+    assert.match(compose, /^volumes:\n {2}account:$/m);
   });
 });
 

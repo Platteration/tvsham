@@ -14,13 +14,23 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
   saved library; `api.ts` talks to the server; `theme.tsx` owns the light/dark palettes).
   Path alias `@/` → `src/`. It is also the website: `public/` (the page template, safety
   net, 404 page and host configs the export copies into the site), `deploy/nginx.conf`,
-  `scripts/build-web.mjs`, and `e2e/` (the browser suite). See Website below.
+  `scripts/build-web.mjs`, and `e2e/` (the browser suite). See Website below. The website's
+  account and accent shop: `account-model.ts` (what api/ says, read field by field, and the
+  words), `account-client.web.ts` (the one module that asks the site's api/; Metro bundles it
+  into the web build alone) and its inert native twin `account-client.ts`, `account.ts` (the
+  state the screens draw from) and `account-ui.tsx` (the cards and the notice).
 - `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `form.ts` what a clip upload's
   body may be before it is parsed, `media.ts` ffmpeg, `recognize.ts` Claude, `resolve.ts`
   Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
   cast, `stt.ts` optional speech-to-text, `sessions.ts` in-memory session store,
   `limiter.ts` concurrency, `usage.ts` the daily cap, `eval/` an offline accuracy
-  harness (`npm run eval --workspace apps/server`).
+  harness (`npm run eval --workspace apps/server`). `account.ts` mounts the shared kit for
+  the website's account and shop, `catalogue.ts` is what it sells, and `src/testing/` holds
+  the fake Google and Stripe the tests hand it (left out of the build by tsconfig.json).
+  `apps/server/kit/` is the shared kit (sign in with Google, Stripe Checkout and its
+  webhook), byte for byte the canonical copy: the charter's `server/kit/`, kept inside the
+  server's workspace because that is what the image copies and what the server's lint,
+  type check and tests walk. Never edit it here; a change goes to the canonical copy.
 - `packages/shared` – types and tuning constants used by both sides.
 
 ## Commands
@@ -29,7 +39,7 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 npm install
 npm run lint                       # eslint in every workspace
 npm run typecheck                  # every workspace
-npm test                           # node:test in both workspaces; no network or API key
+npm test                           # node:test in both workspaces (the server's runs kit/selftest.mjs first); no network or API key
 npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)
 npm run check                      # lint, typecheck, test, test:conventions: the gate before a push
 npm run test:e2e                   # the website in Chromium: builds, serves and drives it
@@ -42,7 +52,8 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 ## Project conventions
 
 - Keep server responses in the shapes from `packages/shared`; the app only renders them.
-- Network access in the server goes through `http.ts` `getJson` so tests can stub it.
+- Network access in the server goes through `http.ts` (`getJson`, `postForm`, and `outbound`,
+  the kit's way to Google and Stripe) so tests can stub it.
 - Claude is called via `@anthropic-ai/sdk` only (`recognize.ts`). Two calls per clip:
   vision + web search reasoning, then a `messages.parse` structured extraction.
 - Uploaded clips live under `apps/server/tmp/<session>-<n>` and are deleted after analysis.
@@ -51,7 +62,7 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
   stands in for Claude and the outside world through `setClientForTests`/`setFetchForTests`).
 - App logic worth testing goes in a React-Native-free module (`palette.ts`,
   `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`, `shapes.ts`,
-  `deadline.ts`, `clip-upload.ts`); the `.tsx` files
+  `deadline.ts`, `clip-upload.ts`, `account-model.ts`, `account.ts`); the `.tsx` files
   then hold only rendering. That is what makes `npm test` possible in `apps/mobile` at all.
 - Colour changes must keep `palette.test.ts` green: it checks every text pairing in
   both schemes and all four accents against WCAG AA.
@@ -139,6 +150,23 @@ will pass typecheck and tests but reopen the hole.
   gate compares the Origin with that string, so a wildcard is a preflight answered 204
   and the request behind it answered 403, and the alternative — treating it as "any
   origin" — is the hole the gate exists to close.
+- **The website's account is the kit, mounted between the Origin gate and the bearer
+  gate.** `account.ts` hands every path below `APP_URL`'s path and `api/` to
+  `apps/server/kit` (createApp's `handle`), from a middleware registered after the Origin
+  gate, so a foreign Origin is refused there as everywhere, and before the `APP_TOKEN`
+  gate, which none of its callers could pass: Google sends the browser back by a
+  navigation, Stripe posts from its own servers, and the page keeps the token in memory
+  only. The kit has its own authentication (a signed sign-in cookie and state, a session
+  cookie and an Origin check on every write, Stripe's signature) and spends no Claude
+  budget. The page's writes carry the site's Origin, so with sign-in on `CORS_ORIGIN` must
+  be `APP_URL`'s origin: `accountProblem` stops the server otherwise, as `CORS_ORIGIN=*`
+  does. The session is a cookie of the website's origin, so the site's reverse proxy puts
+  `/api/` there (`deploy/nginx.conf`, `location ^~ /api/`); the server serves no site.
+  Records live in `KIT_DATA_DIR`, the kit's file store: one process per directory, and the
+  image's on the compose volume `account`. The request log prints no query string, since
+  the sign-in's callback carries Google's one-time code. The daily cap is untouched: clips
+  are still billed to `caller()`. The kit is never edited here (`kit_requests` go to the
+  canonical copy), and `npm test` runs its self-test before the server's tests.
 - **The listener binds loopback unless `HOST` says otherwise.** SEC-1 was fixed by
   binding the *published Docker port*; the listener itself still took every interface,
   so `npm run server` on a laptop put an unauthenticated server on every network the
@@ -213,7 +241,9 @@ Every record the app keeps on the device is named once, in `KEYS` in
 `apps/mobile/src/settings.ts`: `tvsham.settings.v1` (preferences and the server URL),
 `tvsham.library.v1` and `tvsham.history.v1` (the user's own lists), `tvsham.device.v1`
 (the per-install id), `tvsham.queue.v1` (clips waiting for the server), all in
-AsyncStorage, and `tvsham.token.v1` in expo-secure-store.
+AsyncStorage, `tvsham.token.v1` in expo-secure-store, and on the website alone
+`tvsham.checkout.v1` in sessionStorage (the accent pack sent to Checkout, read once on the way
+back to name it in the thank-you; it unlocks nothing).
 `settings-contract.test.ts` pins the table, the row list, the enum tables and
 `PREFERENCE_FIELDS` as literals, and greps the screens for a key string, a direct
 `expo-haptics` import or a bare `Alert.alert`: a renamed key orphans every user's record
@@ -265,7 +295,10 @@ CSP source, so a site published without the build has, in effect, `connect-src '
   `media-src blob:` (the picker reads a video's length through a `<video>`), each `img-src`
   host (the result's pictures), `'self'` (the favicon and the header's back icon) and the
   empty-string hash all fail the suite when dropped. A picture host added to `resolve.ts`
-  or `tmdb.ts` goes into all five.
+  or `tmdb.ts` goes into all five. `connect-src` is `'self'` (the site's own `api/`: the
+  account and the shop, which the server answers through the site's proxy) and the
+  recognition server's origin, nothing else; Google and Stripe are top-level navigations,
+  which CSP does not govern, so nothing else changed for them.
 - **No `'unsafe-inline'`.** react-native-web inserts an empty `<style>` and fills it with
   `insertRule`, which CSP does not govern, so the hash of the empty string is all
   `style-src` needs beyond `'self'`. Nothing inline goes into `index.html` or `404.html`:
@@ -274,6 +307,19 @@ CSP source, so a site published without the build has, in effect, `connect-src '
   every update; Settings shows it read-only): a stored address from an earlier build is one
   the policy refuses. **The token is memory only** (`TOKEN_IS_SAVED`): expo-secure-store has
   no web implementation and `localStorage` is readable by every script on the origin.
+- **The account and the shop are the site's own `api/`.** `account.ts` asks `api/config`
+  once at start (5 s at most) and, when sign-in is on, `api/me`; a 404, an error or a body
+  that is not the kit's is no account, and nothing more is asked, drawn or stored. On a host
+  with nothing at `api/` that one 404 is a console line Chromium logs (the browser suite
+  counts it by its address). An accent the shop sells is drawn and chosen only once `api/me`
+  says it is owned, and Midnight until then (`drawnAccent`, `canUseAccent`); the record's
+  `unlockedAccents` is not read for it, and not written. While `api/` is being asked,
+  Midnight alone. The kit's `?signin=failed` and `?purchase=…` arrive at the first screen and
+  are taken out by the router (`useLandingCleared`): Expo Router writes the address from its
+  own state, so `history.replaceState` alone was written over when it mounted and on every
+  navigation back (measured). The browser suite signs in, buys, posts the signed webhook,
+  signs out and deletes; it answers Google's step by handing the browser the kit's 302 as a
+  `Refresh`, because Playwright routes no request a redirect makes.
 - **What a browser cannot do says so**: camera recording (expo-camera's web `recordAsync`
   answers an empty file) is `WebCameraNotice`; the offline queue (expo-file-system has no
   web implementation) is off (`CAN_QUEUE`), so a failed upload is an error card that says
@@ -298,10 +344,13 @@ CSP source, so a site published without the build has, in effect, `connect-src '
   middleware twice: on the context before the rest runs, because @hono/node-server builds a
   HEAD's response from the GET one's original headers (set only afterwards, `curl -I` showed
   none), and on the finished response for a Response a handler builds itself, which Hono
-  passes on without the context's headers. No handler here does that today; `index.test.ts`
-  drives `apiHeaders` with ones that do and checks every kind of answer the server gives and
-  the README, `http-headers.test.ts` checks them over a real socket through the adapter, and
-  the browser suite checks the preflight and the site's calls.
+  passes on without the context's headers. The account's mount answers that way (every
+  answer is a Response the kit builds), so there the second pass is what sends them, and the
+  server's `Cache-Control: no-store` and policy replace the kit's own (its `api/config` would
+  otherwise be cacheable for a minute); `index.test.ts` drives `apiHeaders` with handlers
+  that build their own and checks every kind of answer the server gives and the README,
+  `account.test.ts` and `http-headers.test.ts` check them over a real socket through the
+  adapter, and the browser suite checks the preflight, the site's calls and the account's.
 - `.well-known/security.txt` expires on 2027-10-08 and the website test fails once it has:
   renew it, a year ahead at most. Its `Contact` is the issues page, because private
   vulnerability reporting is switched off on the repository (SECURITY.md says to open an

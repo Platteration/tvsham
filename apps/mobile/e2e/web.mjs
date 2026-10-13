@@ -8,7 +8,11 @@
 // access token, choose a video, read the answer with its pictures, save it, find it in the library
 // after a reload. It fails on any Content-Security-Policy violation, any console error, any page
 // error, and any request that leaves the site other than to the server it was built for and the
-// three picture hosts the policy names, which are answered here. Then it checks what a chosen video
+// three picture hosts the policy names, which are answered here. Then the website's account and
+// shop, on the site's own origin as deploy/nginx.conf puts them (the host here proxies api/ to the
+// server, which carries the shared kit, with a fake Google and a fake Stripe handed to it): sign in
+// with Google, buy an accent, Stripe's signed webhook unlocks it, sign out, delete the account; and
+// on a host where nothing answers api/, none of it is drawn. Then it checks what a chosen video
 // comes to with the server out of reach, the not-found page, the hosting files' refusals, the
 // safety net and the page without JavaScript.
 import assert from "node:assert/strict";
@@ -56,7 +60,9 @@ process.env.TMDB_API_KEY = "e2e-placeholder";
 process.env.TMP_DIR = join(work, "uploads");
 process.env.STT_PROVIDER = "none";
 
-const { app, API_HEADERS } = await import(pathToFileURL(join(serverSrc, "index.ts")).href);
+const { app, API_HEADERS, setAccountForTests } = await import(pathToFileURL(join(serverSrc, "index.ts")).href);
+const { createAccount } = await import(pathToFileURL(join(serverSrc, "account.ts")).href);
+const { createFakes, envFor, signedDelivery } = await import(pathToFileURL(join(serverSrc, "testing/kit-fakes.ts")).href);
 const { setClientForTests } = await import(pathToFileURL(join(serverSrc, "recognize.ts")).href);
 const { setFetchForTests } = await import(pathToFileURL(join(serverSrc, "http.ts")).href);
 const { ffmpegBinary } = await import(pathToFileURL(join(serverSrc, "media.ts")).href);
@@ -122,15 +128,36 @@ const apiServer = await new Promise((done) => {
 });
 const api = { origin: `http://127.0.0.1:${apiServer.port}` };
 
+// The website's account and shop: the kit in that server, for a site at ${site.origin}${BASE}/,
+// with a fake Google and a fake Stripe as the only way out (createApp's fetch), and its records in
+// a directory of files as a deployment keeps them. Every line it logs is kept and checked at the end.
+const fakes = await createFakes();
+const APP_URL = `${site.origin}${BASE}/`;
+const accountLog = [];
+const account = createAccount({
+  env: { ...envFor(APP_URL), KIT_DATA_DIR: join(work, "account") },
+  fetch: fakes.fetch,
+  log: (level, message) => void accountLog.push(`${level}: ${message}`),
+});
+assert.deepEqual(account.features, { signIn: true, shop: true });
+setAccountForTests(account);
+
 // ---------------------------------------------------------------- the build
 
 step(`building the site for ${api.origin}, served at ${site.origin}${BASE}/`);
 buildWeb({ serverUrl: api.origin, baseUrl: BASE, out, quiet: true });
 const log = [];
-site.use(siteHandler({ dir: out, base: BASE, log }));
 const shipped = parseHeaders(readFileSync(join(out, "_headers"), "utf8"));
 const policy = shipped.find((r) => r.path === "/*").headers.find(([n]) => n === "Content-Security-Policy")[1];
-assert.ok(policy.includes(`connect-src ${api.origin};`), "the build wrote the server's origin into the policy");
+const HSTS = shipped.find((r) => r.path === "/*").headers.find(([n]) => n === "Strict-Transport-Security")[1];
+/** The site as deploy/nginx.conf serves it, api/ proxied to the server; or as a static host does, with nothing at api/. */
+let apiOn = true;
+const serveSite = (withApi) => {
+  apiOn = withApi;
+  site.use(siteHandler({ dir: out, base: BASE, log, api: withApi ? { origin: api.origin, headers: [["Strict-Transport-Security", HSTS]] } : null }));
+};
+serveSite(true);
+assert.ok(policy.includes(`connect-src 'self' ${api.origin};`), "the build wrote the site itself and the server's origin into the policy");
 const metaPolicy = /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(readFileSync(join(out, "index.html"), "utf8"))?.[1];
 assert.equal(metaPolicy, policy.replace(" frame-ancestors 'none';", ""), "index.html carries the same policy, less what a meta tag cannot");
 
@@ -158,6 +185,11 @@ const browser = await chromium.launch();
 let expect404 = false;
 /** The console error Chromium logs for a request to a server that is not there, in the step that stages one. */
 let expectUnreachable = false;
+/** On a host with nothing at api/, the page's one question is a 404, which Chromium logs: counted, by its address. */
+let noApi404s = 0;
+/** The one violation a step provokes on purpose: a request to another origin, which connect-src refuses. */
+let expectRefusedConnect = null;
+const refusedConnects = [];
 
 /** Fail on every violation, console error and page error a page reports. */
 async function watched(contextOptions = {}) {
@@ -182,6 +214,21 @@ async function watched(contextOptions = {}) {
   const page = await context.newPage();
   page.on("console", (m) => {
     const text = m.text();
+    // Chromium reports the one refusal several ways (the event, once per policy - the header's
+    // and the <meta>'s - and two console lines), some of them after the fetch has settled.
+    if (
+      expectRefusedConnect &&
+      (text.startsWith(`securitypolicyviolation: connect-src blocked ${expectRefusedConnect}`) ||
+        (text.startsWith(`Refused to connect to '${expectRefusedConnect}'`) && text.includes('Content Security Policy directive: "connect-src')) ||
+        (text.startsWith(`Fetch API cannot load ${expectRefusedConnect}.`) && text.includes("Content Security Policy")))
+    ) {
+      refusedConnects.push(text.split(" ")[0]);
+      return;
+    }
+    if (!apiOn && m.type() === "error" && /status of 404/.test(text) && m.location().url === `${APP_URL}api/config`) {
+      noApi404s++;
+      return;
+    }
     if (text.startsWith("securitypolicyviolation")) problem(text);
     else if (m.type() === "warning") warnings.add(text.split("\n")[0].slice(0, 200));
     else if (
@@ -200,11 +247,20 @@ async function watched(contextOptions = {}) {
 const HASHED = /^\/(_expo\/static|assets)\//;
 let siteResponses = 0;
 let apiResponses = 0;
+let accountResponses = 0;
 /** Every response from the site carries the shipped headers; every one from the server, the API's. */
 function checkHeaders(res) {
   const url = new URL(res.url());
   const h = res.headers();
-  if (url.origin === site.origin) {
+  if (apiOn && url.origin === site.origin && url.pathname.startsWith(`${BASE}/api/`)) {
+    // The account's answers, through the proxy: the server's API headers, and the one header the
+    // proxy's location adds, never the site's policy or cache rule.
+    accountResponses++;
+    for (const [name, value] of Object.entries(API_HEADERS)) {
+      if (h[name.toLowerCase()] !== value) problem(`${url.pathname}: ${name} is ${JSON.stringify(h[name.toLowerCase()])}`);
+    }
+    if (h["strict-transport-security"] !== HSTS) problem(`${url.pathname}: Strict-Transport-Security is ${h["strict-transport-security"]}`);
+  } else if (url.origin === site.origin) {
     siteResponses++;
     const sitePath = url.pathname.slice(BASE.length) || "/";
     for (const [name, value] of shipped.find((r) => r.path === "/*").headers) {
@@ -253,6 +309,12 @@ try {
   await page.getByText(api.origin, { exact: true }).waitFor();
   assert.equal(await page.getByText("https://elsewhere.example").count(), 0, "a stored server address is not used");
   await page.getByText("In a browser the token is kept only while this tab is open").waitFor();
+  // The site's api/ answers here, so the account and the accent packs are drawn: signed out, each
+  // pack at the price Stripe holds for it, to sign in for.
+  await page.getByRole("button", { name: "Sign in with Google" }).waitFor();
+  await page.getByText("Accent packs", { exact: true }).waitFor();
+  assert.equal(await page.getByText("€1.99", { exact: true }).count(), 3, "three packs, priced");
+  assert.equal(await page.getByRole("button", { name: "Sign in to buy: Sunset accent" }).count(), 1);
   await page.getByPlaceholder("Matches APP_TOKEN on the server").fill(TOKEN);
   await page.getByRole("button", { name: "Test connection" }).click();
   await page.getByText(/^Connected · v0\.1\.0/).waitFor();
@@ -296,6 +358,144 @@ try {
   await page.getByRole("link", { name: "Open TVsham" }).click();
   await page.getByRole("button", { name: "Choose a video" }).waitFor();
   await context.close();
+
+  // -------------------------------------------------------------- the account and the shop
+  step("the account: sign in with Google, buy an accent, Stripe's webhook unlocks it, sign out, delete");
+  {
+    const { context: c, page: p } = await watched();
+    current = p;
+    const outside = [];
+    // The kit answers the sign-in's start with a 302 to Google, and Playwright routes no request a
+    // redirect makes (measured: the browser went to the real accounts.google.com). So the browser
+    // is handed the kit's own answer, its sign-in cookie included, as a Refresh to that same
+    // address, which it then asks for as a navigation of its own; that one is answered here as
+    // Google answers it, with a 302 back to the callback, which the browser follows to the site.
+    await p.route(`${site.origin}${BASE}/api/auth/google/start*`, async (route) => {
+      const res = await route.fetch({ maxRedirects: 0 });
+      const location = res.headers()["location"] ?? "";
+      if (res.status() !== 302 || !location.startsWith("https://accounts.google.com/o/oauth2/v2/auth?")) {
+        problem(`the sign-in start answered ${res.status()} ${location}`);
+      }
+      const headers = { ...res.headers(), refresh: `0; url=${location}` };
+      delete headers.location;
+      await route.fulfill({ status: 200, headers, body: "" });
+    });
+    await p.route("https://accounts.google.com/**", async (route) => {
+      outside.push("google");
+      await route.fulfill({ status: 302, headers: { location: fakes.consent(route.request().url()).href } });
+    });
+    // Stripe's Checkout: the page is sent to it only with the address the kit had Stripe make, and
+    // it sends the page back to the success address, as Stripe does once the card is taken.
+    const checkouts = [];
+    await p.route("https://checkout.stripe.com/**", async (route) => {
+      outside.push("stripe");
+      checkouts.push(route.request().url());
+      await route.fulfill({ status: 302, headers: { location: `${APP_URL}?purchase=success` } });
+    });
+    const accentOf = async () =>
+      p.getByRole("button", { name: "Test connection" }).evaluate((el) => getComputedStyle(el).backgroundColor);
+    const MIDNIGHT = "rgb(111, 77, 255)";
+    const SUNSET = "rgb(255, 107, 61)";
+    const signIn = async () => {
+      await p.getByRole("button", { name: "Sign in with Google" }).click();
+      await p.waitForURL(`${site.origin}${BASE}/settings`);
+      await p.getByText("Signed in as ada@example.com").waitFor();
+    };
+
+    await p.goto(`${site.origin}${BASE}/settings`);
+    await p.getByRole("button", { name: "Sign in with Google" }).waitFor();
+    assert.equal(await p.getByRole("button", { name: "Sunset", exact: true }).isDisabled(), true, "a pack on sale is not chosen for free");
+    await signIn();
+    assert.equal(await p.context().cookies().then((all) => all.filter((k) => k.name === "__Host-tvsham-session").length), 1, "a session cookie of the site's own");
+
+    // Buy: Checkout, and back to the site before the webhook has said anything.
+    await p.getByRole("button", { name: "Buy: Sunset accent" }).click();
+    await p.waitForURL(new RegExp(`^${site.origin}${BASE}/?(\\?purchase=success)?$`));
+    assert.equal(checkouts.length, 1);
+    assert.ok(checkouts[0].startsWith("https://checkout.stripe.com/c/pay/cs_test_fake"), checkouts[0]);
+    // Stripe's signed webhook, through the site's own address as Stripe would post it.
+    const delivery = signedDelivery(fakes.paid(checkouts[0]));
+    const hook = await fetch(`${APP_URL}api/webhooks/stripe`, { method: "POST", headers: { "stripe-signature": delivery.signature }, body: delivery.body });
+    assert.equal(hook.status, 200);
+    await p.getByText("Thank you — Sunset accent is unlocked.").waitFor({ timeout: 20_000 });
+    assert.equal(await p.evaluate(() => location.search), "", "the purchase is taken out of the address");
+    await p.getByRole("button", { name: "Dismiss" }).click();
+
+    // ...and stays out of it when the router writes the address again, coming back to this screen.
+    await p.getByText("Settings", { exact: true }).click();
+    await p.getByText("Owned", { exact: true }).waitFor();
+    await p.goBack();
+    await p.getByRole("button", { name: "Choose a video" }).waitFor();
+    assert.equal(await p.evaluate(() => location.search), "", "the router does not put the purchase back");
+
+    // The accent is the visitor's now: chosen, drawn, and still drawn after a reload.
+    await p.getByText("Settings", { exact: true }).click();
+    await p.getByText("Owned", { exact: true }).waitFor();
+    assert.equal(await accentOf(), MIDNIGHT);
+    await p.getByRole("button", { name: "Sunset", exact: true }).click();
+    await p.waitForFunction((want) => getComputedStyle([...document.querySelectorAll("[role=button]")].find((b) => b.textContent === "Test connection")).backgroundColor === want, SUNSET);
+    await p.reload();
+    await p.getByText("Signed in as ada@example.com").waitFor();
+    assert.equal(await accentOf(), SUNSET);
+
+    // Signed out, the account is not there to say so: Midnight is drawn, and Sunset is for sale again.
+    await p.getByRole("button", { name: "Sign out" }).click();
+    await p.getByRole("button", { name: "Sign in with Google" }).waitFor();
+    assert.equal(await accentOf(), MIDNIGHT);
+    assert.equal(await p.getByRole("button", { name: "Sign in to buy: Sunset accent" }).count(), 1);
+
+    // Signed in again, it is back; deleted, the account and the purchase are gone together.
+    await signIn();
+    assert.equal(await accentOf(), SUNSET);
+    p.once("dialog", (dialog) => void dialog.accept());
+    await p.getByRole("button", { name: "Delete account" }).click();
+    await p.getByRole("button", { name: "Sign in with Google" }).waitFor();
+    assert.equal(await accentOf(), MIDNIGHT);
+    await signIn();
+    assert.equal(await p.getByRole("button", { name: "Buy: Sunset accent" }).count(), 1, "a new account owns nothing");
+    assert.equal(await accentOf(), MIDNIGHT);
+    assert.deepEqual(outside, ["google", "stripe", "google", "google"], "Google and Stripe were reached by navigation alone");
+
+    // A sign-in that does not complete says so on the site, once.
+    await p.goto(`${APP_URL}api/auth/google/callback?code=forged&state=forged`);
+    await p.getByText("Sign-in didn't complete.").waitFor();
+    assert.equal(await p.evaluate(() => location.search), "");
+
+    // The policy lets the page reach its own site and the server, and nothing else.
+    expectRefusedConnect = "https://example.com/";
+    assert.equal(await p.evaluate(() => fetch("https://example.com/").then(() => "loaded", () => "refused")), "refused");
+    for (let i = 0; i < 50 && !refusedConnects.includes("securitypolicyviolation:"); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(refusedConnects.includes("securitypolicyviolation:"), "refused by connect-src, and reported");
+    assert.deepEqual(fakes.unexpected, []);
+    await c.close();
+    expectRefusedConnect = null;
+  }
+
+  step("where nothing answers api/, the page asks once and draws no account and no shop");
+  {
+    serveSite(false);
+    try {
+      const { context: c, page: p } = await watched();
+      current = p;
+      const asked = log.length;
+      await p.goto(`${site.origin}${BASE}/settings`);
+      await p.getByText("Recognition server", { exact: true }).waitFor();
+      await p.getByText("Feedback and motion", { exact: true }).waitFor();
+      await p.waitForFunction(() => document.readyState === "complete");
+      await p.waitForTimeout(500);
+      assert.equal(await p.getByRole("button", { name: "Sign in with Google" }).count(), 0);
+      assert.equal(await p.getByText("Accent packs").count(), 0);
+      for (const name of ["Midnight", "Sunset", "Forest", "Mono"]) {
+        assert.equal(await p.getByRole("button", { name, exact: true }).isDisabled(), false, `${name} is chosen as before`);
+      }
+      const apiAsks = log.slice(asked).filter((r) => r.path.startsWith(`${BASE}/api/`));
+      assert.deepEqual(apiAsks, [{ method: "GET", path: `${BASE}/api/config`, status: 404 }], "one question, a 404, and nothing more");
+      assert.equal(noApi404s, 1, "and the one console line Chromium logs for it");
+      await c.close();
+    } finally {
+      serveSite(true);
+    }
+  }
 
   step("with the server out of reach, a chosen video is said to be not kept, and what to do");
   {
@@ -392,14 +592,19 @@ try {
   await site.close();
   setClientForTests(null);
   setFetchForTests(null);
+  setAccountForTests(null);
   rmSync(work, { recursive: true, force: true });
 }
 
 const left = log.filter((r) => !r.path.startsWith(`${BASE}/`) && r.path !== BASE);
 if (left.length) problem(`requests outside ${BASE}: ${left.map((r) => r.path).join(", ")}`);
-if (siteResponses === 0 || apiResponses === 0) problem(`headers were checked on ${siteResponses} site and ${apiResponses} server responses`);
+if (siteResponses === 0 || apiResponses === 0 || accountResponses === 0) {
+  problem(`headers were checked on ${siteResponses} site, ${apiResponses} server and ${accountResponses} account responses`);
+}
+// The kit logs one line for the sign-in staged to fail above, and nothing else.
+assert.deepEqual(accountLog, ["warn: kit (tvsham): sign-in failed (no valid sign-in cookie)"]);
 if (warnings.size) console.log(`\nConsole warnings (not failures):\n${[...warnings].map((w) => `  ${w}`).join("\n")}`);
-console.log(`\n${siteResponses} site responses and ${apiResponses} server responses checked; outside calls the server made: ${[...new Set(outside)].join(", ")}`);
+console.log(`\n${siteResponses} site, ${accountResponses} account and ${apiResponses} server responses checked; outside calls the server made: ${[...new Set(outside)].join(", ")}`);
 if (problems.length) {
   console.error(`\n${problems.length} problem(s):\n${problems.map((p) => `  - ${p}`).join("\n")}`);
   process.exit(1);

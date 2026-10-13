@@ -2,6 +2,7 @@ import { DarkTheme, Stack, ThemeProvider } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { useColorScheme } from "react-native";
+import { account } from "@/account";
 import { hydrate, useSettings } from "@/store";
 import { useTheme } from "@/theme";
 
@@ -13,6 +14,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     void hydrate();
+    // The website's account and shop: asks the site's api/ once (a phone's client answers at once).
+    void account.start();
   }, []);
 
   const theme = {

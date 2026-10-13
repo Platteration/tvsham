@@ -7,6 +7,7 @@ import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, Tex
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CLIP_SECONDS, MAX_CLIPS_PER_SESSION, MAX_HINT_LENGTH, type CaptureSource } from "@tvsham/shared";
 import { captureStarted, identified, queued, recordingPicked } from "@/feedback";
+import { AccountNotice, useLandingCleared } from "@/account-ui";
 import { Breathing, SonarRings, ViewfinderFrame } from "@/motion";
 import { makeStyles, radius, space, useTheme } from "@/theme";
 import { Button, Card, Muted, Title } from "@/ui";
@@ -33,6 +34,8 @@ export default function CaptureScreen() {
   const hydrated = useHydrated();
   const insets = useSafeAreaInsets();
   const busy = state.phase === "recording" || state.phase === "uploading";
+  // The website's sign-in and Checkout come back here with their answer in the address.
+  useLandingCleared();
 
   useEffect(() => {
     void loadQueue();
@@ -108,6 +111,9 @@ export default function CaptureScreen() {
           </Pressable>
         ))}
       </View>
+
+      {/* The website's sign-in and Checkout send the visitor back here; this says how it went. */}
+      <AccountNotice style={styles.notice} />
 
       {hydrated && !settings.serverUrl ? (
         <Card style={styles.notice}>

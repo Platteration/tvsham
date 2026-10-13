@@ -4,6 +4,9 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import type { HealthResponse } from "@tvsham/shared";
 import { health } from "@/api";
+import { useAccount, useCanUseAccent, useDrawnAccent } from "@/account";
+import { PRIVACY_WITH_ACCOUNT } from "@/account-model";
+import { AccentShopCard, AccountCard, AccountNotice } from "@/account-ui";
 import { confirmAction } from "@/confirm";
 import { isSafeWebUrl } from "@/format";
 import { APPEARANCE_NAMES, REDUCE_MOTION_NAMES, serverUrlWarning, type ReduceMotion } from "@/settings";
@@ -23,6 +26,11 @@ export default function SettingsScreen() {
   const styles = useStyles();
   const c = useTheme();
   const settings = useSettings();
+  // Which accents may be chosen and which is drawn: the website's shop decides for the accents it
+  // sells, from what the server says the visitor owns (account.ts); elsewhere the record's own list.
+  const canUseAccent = useCanUseAccent(settings.unlockedAccents);
+  const drawnAccent = useDrawnAccent(settings.accent);
+  const { phase } = useAccount();
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
   const [token, setToken] = useState(settings.token);
   const [testing, setTesting] = useState(false);
@@ -75,6 +83,7 @@ export default function SettingsScreen() {
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <AccountNotice />
         <Card>
           <Title>Recognition server</Title>
           <Muted style={{ marginTop: space.xs }}>
@@ -148,8 +157,8 @@ export default function SettingsScreen() {
           <Text style={styles.label}>Accent</Text>
           <View style={styles.swatchRow}>
             {ACCENT_NAMES.map((name: AccentName) => {
-              const owned = settings.unlockedAccents.includes(name);
-              const selected = settings.accent === name;
+              const owned = canUseAccent(name);
+              const selected = drawnAccent === name;
               return (
                 <Pressable
                   key={name}
@@ -167,6 +176,8 @@ export default function SettingsScreen() {
             })}
           </View>
         </Card>
+
+        <AccentShopCard />
 
         <Card>
           <Title>Feedback and motion</Title>
@@ -202,6 +213,8 @@ export default function SettingsScreen() {
           <Button label="Reset to defaults" variant="ghost" compact style={styles.resetButton} onPress={reset} />
         </Card>
 
+        <AccountCard />
+
         <Card>
           <Title>How it works</Title>
           <Muted style={{ marginTop: space.xs }}>TVsham {version} · Shazam, but for video.</Muted>
@@ -211,6 +224,7 @@ export default function SettingsScreen() {
           <Muted style={{ marginTop: space.sm }}>
             Everything the app sends — each clip, your optional hint, the access token and a random per-install id — goes only to the server address you set above, and the server deletes a clip as soon as it has been analysed.
           </Muted>
+          {phase === "on" ? <Muted style={{ marginTop: space.sm }}>{PRIVACY_WITH_ACCOUNT}</Muted> : null}
           <Pressable
             onPress={openSource}
             hitSlop={8}

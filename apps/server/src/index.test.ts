@@ -359,8 +359,8 @@ describe("http", () => {
   });
 
   it("sends them on a Response a handler builds itself, which Hono passes on without the context's", async () => {
-    // Nothing in this server answers that way today; the second pass in apiHeaders is there for
-    // the first handler that does. Without it, each of these went out with none of the headers.
+    // The website's account answers that way (account.test.ts checks its answers); the second
+    // pass in apiHeaders is what covers it. Without it, each of these went out with none of the headers.
     const probe = new Hono();
     probe.use("*", apiHeaders);
     probe.get("/route", () => new Response("built here"));

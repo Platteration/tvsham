@@ -27,17 +27,23 @@ FROM node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 # HOST: inside a container every interface is the container's own, and the
 # published port is the boundary - docker-compose.yml keeps that on loopback.
-ENV NODE_ENV=production PORT=8787 HOST=0.0.0.0 TMP_DIR=/tmp/tvsham
+# KIT_DATA_DIR: where the website's account and shop keep their records (src/account.ts), off
+# until APP_URL and the rest are set. A volume of its own in docker-compose.yml, so a purchase
+# outlives the container.
+ENV NODE_ENV=production PORT=8787 HOST=0.0.0.0 TMP_DIR=/tmp/tvsham KIT_DATA_DIR=/var/lib/tvsham/account
 WORKDIR /app
 # Only what the server runs: the compiled output, the shared package it imports,
-# and the pruned production dependencies. typescript, tsx and the rest of the
-# dev tree have no business in a container that decodes uploaded video.
+# the kit it mounts for the website's account and shop (plain JavaScript, run as
+# it is from apps/server/kit, beside dist), and the pruned production
+# dependencies. typescript, tsx and the rest of the dev tree have no business in
+# a container that decodes uploaded video.
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/packages/shared ./packages/shared
 COPY --from=build --chown=node:node /app/apps/server/package.json ./apps/server/package.json
 COPY --from=build --chown=node:node /app/apps/server/dist ./apps/server/dist
-RUN mkdir -p /tmp/tvsham && chown node:node /tmp/tvsham
+COPY --from=build --chown=node:node /app/apps/server/kit ./apps/server/kit
+RUN mkdir -p /tmp/tvsham /var/lib/tvsham && chown node:node /tmp/tvsham /var/lib/tvsham
 USER node
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

@@ -2,7 +2,9 @@
 # _headers instead; nginx: see deploy/nginx.conf. The same values are in all of them, and in the
 # <meta> policy scripts/build-web.mjs writes into index.html; src/website.test.ts fails when they
 # differ, and _headers says what each source is for. The build fills in TVSHAM_SERVER_ORIGIN and
-# the base path.
+# the base path. The account and shop at /api/ need a proxy to the recognition server, which a
+# .htaccess cannot set up (mod_proxy is server configuration): in the virtual host,
+# ProxyPass "/api/" "http://127.0.0.1:8787/api/" with mod_proxy and mod_proxy_http.
 
 Options -Indexes
 ServerSignature Off
@@ -34,7 +36,7 @@ ErrorDocument 403 %BASE_URL%/404.html
 </IfModule>
 
 <IfModule mod_headers.c>
-  Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'"
+  Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src 'self' TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'"
   Header always set X-Content-Type-Options "nosniff"
   Header always set X-Frame-Options "DENY"
   Header always set Referrer-Policy "no-referrer"

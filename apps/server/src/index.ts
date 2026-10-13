@@ -18,6 +18,7 @@ import {
   type HealthResponse,
   type RecognitionResult,
 } from "@tvsham/shared";
+import { accountProblem, createAccount, type Account } from "./account.js";
 import { config } from "./config.js";
 import { clipFormBoundary, clipFormProblem } from "./form.js";
 import { Limiter } from "./limiter.js";
@@ -210,11 +211,13 @@ export function caller(c: Context): string {
  * of them). And again once everything else has answered, for a Response a
  * handler builds itself (`return new Response(...)` from a route, a not-found
  * or an error handler): Hono hands that one on as it is, without the headers
- * set on the context (measured). Every answer this server sends today goes
- * through the context - the routes, the CORS preflight, the Origin and token
- * gates, the body limits, the default not-found and error answers - so the
- * second pass is for the next handler that does not; index.test.ts drives it
- * with handlers that build their own.
+ * set on the context (measured). The website's account (account.ts) answers
+ * that way - every answer of the kit is a Response it builds - so there this
+ * second pass is what sends them, and the server's no-store and policy replace
+ * the kit's own. Every other answer goes through the context - the routes, the
+ * CORS preflight, the Origin and token gates, the body limits, the default
+ * not-found and error answers; index.test.ts drives the second pass with
+ * handlers that build their own, and account.test.ts with the kit.
  */
 export const API_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -236,11 +239,20 @@ app.use("*", apiHeaders);
  * for, and it is in the path of every request. Hono's logger prints the whole
  * path, so an hour of stdout — `docker logs`, journald, a pasted crash dump —
  * is an hour of live sessions to read, destroy or push a clip into.
+ *
+ * It prints the query string too, and the one route here that takes one is the
+ * website's sign-in: Google sends the browser back to it with a one-time code
+ * and the sign-in's state in the query, and the start of a sign-in carries the
+ * page to come back to. None of that belongs in a log, so no query is printed.
  */
 const SESSION_ID_IN_PATH = /\/sessions\/[^/\s?]+/g;
+const QUERY = /\?\S*/g;
+export function loggedPath(message: string): string {
+  return message.replace(SESSION_ID_IN_PATH, "/sessions/<id>").replace(QUERY, "?<query>");
+}
 app.use(
   "*",
-  logger((message, ...rest) => console.log(message.replace(SESSION_ID_IN_PATH, "/sessions/<id>"), ...rest)),
+  logger((message, ...rest) => console.log(loggedPath(message), ...rest)),
 );
 // The mobile app is not a browser and needs no CORS. Sending permissive headers
 // by default would let any web page the user visits spend the operator's budget
@@ -261,6 +273,32 @@ app.use("*", async (c, next) => {
   const origin = c.req.header("origin");
   if (origin && origin !== config.corsOrigin) return c.json({ error: "cross-origin request refused" }, 403);
   return next();
+});
+
+/**
+ * The website's account and shop (account.ts): the shared kit, answering every
+ * path below APP_URL's path and `api/` - `/api/` for a site at the root of its
+ * origin - whatever it then answers there, so no route behind it is reachable
+ * by that path. Here, behind the Origin gate above, which the page passes
+ * because CORS_ORIGIN names the site's origin (main() refuses to start when
+ * sign-in is on and it does not), and ahead of the bearer-token gate below,
+ * which the kit's requests cannot pass: Google sends the browser back to the
+ * sign-in by a navigation, Stripe posts its webhook from its own servers, and
+ * the page keeps the token in memory only. They carry their own
+ * authentication instead - a signed sign-in cookie and state, a session
+ * cookie and an Origin check on every write, Stripe's signature - and spend
+ * nothing of the Claude budget the token guards. Off until its variables are
+ * set: then `GET /api/config` says nothing is on, and the rest is a 404.
+ */
+const defaultAccount = createAccount({ env: process.env });
+let account: Account = defaultAccount;
+/** Swaps in an account built with fakes (tests); null puts back the one built from the environment. */
+export function setAccountForTests(next: Account | null): void {
+  account = next ?? defaultAccount;
+}
+app.use("*", async (c, next) => {
+  if (!account.owns(c.req.path)) return next();
+  return account.handle(c.req.raw);
 });
 
 /**
@@ -328,7 +366,8 @@ function countWrongToken(bucket: string, now = Date.now()): number {
   return WRONG_TOKENS_ALLOWED - seen.count;
 }
 
-// Optional bearer-token gate for everything except the health check.
+// Optional bearer-token gate for everything except the health check (and the
+// account's routes, answered above with authentication of their own).
 app.use("*", async (c, next) => {
   if (!config.appToken || c.req.path === "/health") return next();
   if (tokenMatches(c.req.header("authorization") ?? "", config.appToken)) return next();
@@ -807,6 +846,12 @@ async function main(): Promise<void> {
     console.error(`[server] ${corsProblem}`);
     process.exit(1);
   }
+  const signInProblem = accountProblem(account, config.corsOrigin);
+  if (signInProblem) {
+    // Refused for the same reason: a sign-in whose every write is refused.
+    console.error(`[server] ${signInProblem}`);
+    process.exit(1);
+  }
   const sttProblem = sttWarning();
   if (sttProblem) {
     // Fail loudly rather than transcribing to somewhere the operator did not choose.
@@ -820,6 +865,12 @@ async function main(): Promise<void> {
     sweepSessions();
     void sweepTmpDir(config.sessionTtlMs);
   }, 60_000).unref();
+  // The account's records expire by date; the file store keeps them until swept. The first
+  // sweep also creates KIT_DATA_DIR, so a directory this process cannot write stops it here.
+  await account.sweep();
+  setInterval(() => {
+    account.sweep().catch((err) => console.warn("[account] sweep failed", err));
+  }, 3_600_000).unref();
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.warn("[server] ANTHROPIC_API_KEY is not set; recognition requests will fail until it is.");
   }
@@ -832,6 +883,9 @@ async function main(): Promise<void> {
   }
   console.log(`[server] ffmpeg: ${(await ffmpegBinary()) ?? "NOT FOUND"}`);
   console.log(`[server] model: ${config.model}, stt: ${sttProvider().name}`);
+  console.log(
+    `[server] website account (${account.prefix}): sign-in ${account.features.signIn ? "on" : "off"}, shop ${account.features.shop ? "on" : "off"}`,
+  );
   serve(
     {
       fetch: app.fetch,

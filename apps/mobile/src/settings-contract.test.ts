@@ -41,6 +41,7 @@ describe("the settings contract", () => {
       device: "tvsham.device.v1",
       queue: "tvsham.queue.v1",
       token: "tvsham.token.v1",
+      checkout: "tvsham.checkout.v1",
     });
   });
 

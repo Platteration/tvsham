@@ -6,7 +6,7 @@
 - a **YouTube video / Short**, **TikTok**, **Reel** → a link on the video's own platform, opened straight in that app, plus the creator's profile
 - anything you want to keep → **Save for later** in the app's library, mark as watched when you're done
 
-iOS and Android, built with Expo (React Native), and the same app as a website. Recognition runs on a small Node server you host yourself.
+iOS and Android, built with Expo (React Native), and the same app as a website. Recognition runs on a small Node server you host yourself. The website can also sign visitors in with Google and sell the accent packs through Stripe, off until you give the server the keys ([The website's account and shop](#the-websites-account-and-shop)).
 
 ```
 ┌──────────────────────┐   8 s clips (480p mp4)   ┌──────────────────────────────┐
@@ -79,6 +79,7 @@ Check it: `curl http://localhost:8787/health` →
 - Decoding is bounded at both ends. What a clip claims about itself is read by one ffmpeg probe, and that probe is bounded before it runs: `MAX_STREAMS` caps how many decoders it may open at all, `PROBE_MEMORY_MB` caps the address space it may take, and it reads only the first 100 KB of the file instead of decoding frames from every stream to fill in what the container did not declare. That last one is the difference between 736 MB and 113 MB for a 1.4 MB upload carrying eight 8192x4608 streams. The pixel and duration budgets (`MAX_PIXELS`, `MAX_DURATION_SECONDS`) are then applied to what the probe reported — after that one bounded run and before any frame is extracted. Every ffmpeg run has a hard timeout, and the input is restricted to local files and to the container formats a phone records.
 - No CORS headers are sent unless `CORS_ORIGIN` is set, and then only for that one origin: the website's, when you run it (see [Run it as a website](#run-it-as-a-website)). Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
 - Every answer carries the headers of an API, whatever it is (a result, a refusal, a 404, an error): `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`. Nothing it sends is a page, so nothing may run, be framed, be sniffed into another type, be embedded by another site or be kept by a cache on the way; the bodies are per session, and one of them carries the session key. `Strict-Transport-Security` belongs to the TLS proxy in front of it, since a browser ignores it over the plain HTTP the server itself speaks.
+- The website's account and shop (`/api/`, below) answer without `APP_TOKEN`, ahead of that gate: Google sends the browser back to the sign-in by a navigation, Stripe posts its webhook from its own servers, and the page keeps the token in memory only, so none of them could carry it. They have their own authentication instead (a signed sign-in cookie and state, a session cookie and an `Origin` check on every write, Stripe's signature) and spend nothing of the Claude budget the token guards. With nothing configured, `/api/config` says so and every other path below `/api/` is a JSON 404. The request log prints no query string, because the sign-in's callback carries Google's one-time code in one.
 - Uploads are capped at 80 MB and rejected before they are buffered. A clip is taken as `multipart/form-data` and nothing else (any other `Content-Type` is a 415), with at most 8 fields and at most 8 KB of headers opening each, checked before the form is parsed: parsed whole, an 80 MB body of nothing but tiny fields, header lines or urlencoded pairs held the server's event loop for 7 to 15 seconds and spent nothing a caller is limited by. Clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 #### Server configuration
@@ -116,6 +117,7 @@ Check it: `curl http://localhost:8787/health` →
 | `TMDB_API_KEY` | – | Optional TMDB key. Adds "where to watch" and a cast list to film and TV results. |
 | `WATCH_REGION` | `US` | Country for watch providers when the app sends none; the app sends the device's own. |
 | `FFMPEG_PATH` | auto | Explicit ffmpeg binary. |
+| `APP_URL`, `SESSION_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ACCENT_SUNSET`, `STRIPE_PRICE_ACCENT_FOREST`, `STRIPE_PRICE_ACCENT_MONO`, `KIT_DATA_DIR` | – | The website's account and shop, off until they are set: see [The website's account and shop](#the-websites-account-and-shop). The Docker image sets `KIT_DATA_DIR=/var/lib/tvsham/account`, on a volume of its own in `docker-compose.yml`. |
 
 #### API
 
@@ -126,6 +128,7 @@ Check it: `curl http://localhost:8787/health` →
 | `POST` | `/sessions/:id/clips` | `multipart/form-data` (415 otherwise), field `clip` (mp4/mov/webm), at most 8 fields | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
+| any | `/api/…` | – | The website's account and shop (the shared kit's routes: `config`, `auth/google/start`, `auth/google/callback`, `auth/logout`, `me`, `checkout`, `portal`, `webhooks/stripe`); see below and `apps/server/kit/README.md` |
 
 Every call about an existing session carries `X-Session-Key: <sessionKey>`, the secret
 returned when it was created; without it the answer is `404`, the same as for an id that
@@ -137,6 +140,28 @@ with it.
 A clip upload answers `202` when that clip is already being analysed (a retry arriving while the original is in flight); the app then polls `GET /sessions/:id` until `analysing` turns false, instead of mistaking the mid-flight state for an answer.
 
 `RecognitionResult.status` is `listening` (send another clip), `identified`, `unsure` (best guess after the clip limit) or `failed`. See `packages/shared/src/index.ts` for the full shapes.
+
+#### The website's account and shop
+
+The server also carries what the website needs to sign a visitor in with Google and sell the three accent packs that do not ship with the app (Sunset, Forest and Mono; Midnight is everyone's) through Stripe Checkout. It is the shared kit in `apps/server/kit/` (copied byte for byte from the canonical copy, never edited here; its `README.md` is the full guide), mounted in the Hono server below `APP_URL`'s path and `api/`, with this app's catalogue in `apps/server/src/catalogue.ts` and the mount in `apps/server/src/account.ts`. The phone apps neither use nor show any of it: they keep every accent pack, as before, since the App Store and Google Play require their own in-app purchase for digital goods.
+
+It is **off until you set its variables**, and with none of them the website looks and behaves as before:
+
+| Variable | What it is |
+| --- | --- |
+| `APP_URL` | The website's public address with the trailing slash: `https://watch.example.com/`. Every address the account writes (Google's redirect, Checkout's return) comes from it, never from a request's headers. Its origin must be `CORS_ORIGIN`'s: the server refuses to start with sign-in on and the two apart, because the page's sign-out, Buy and Delete account carry the site's `Origin`, which the server refuses unless `CORS_ORIGIN` names it. |
+| `SESSION_SECRET` | 32 random bytes, base64url: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | A Google OAuth client of type *Web application* whose authorised redirect URI is `APP_URL` + `api/auth/google/callback`. |
+| `STRIPE_SECRET_KEY` | A restricted key: Checkout Sessions write, Prices read, Customer portal write, Customers write. `rk_test_…` first. |
+| `STRIPE_WEBHOOK_SECRET` | The signing secret of a webhook endpoint at `APP_URL` + `api/webhooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `charge.refunded`, `charge.dispute.created`, `customer.subscription.updated` and `customer.subscription.deleted`. |
+| `STRIPE_PRICE_ACCENT_SUNSET`, `STRIPE_PRICE_ACCENT_FOREST`, `STRIPE_PRICE_ACCENT_MONO` | The Stripe Price (one-time, fixed amount) of each pack; a pack without one is not sold, and stays as it was. |
+| `KIT_DATA_DIR` | Where the sessions and the purchases are kept, one file per record: a directory outside anything a web server publishes, written by this one server process alone. Without it sign-in and the shop stay off, and the server says so. |
+
+**On the site's own origin.** The sign-in is a cookie of the website's origin, so the page must reach `/api/` there, not at the recognition server's address. The website's reverse proxy sends it to the server: `apps/mobile/deploy/nginx.conf` does, in `location ^~ /api/` (to `127.0.0.1:8787`, where `docker-compose.yml` publishes the server; delete the block to serve a site with no account). Apache cannot proxy from a `.htaccess`: put `ProxyPass "/api/" "http://127.0.0.1:8787/api/"` (with `mod_proxy` and `mod_proxy_http`) in the virtual host. Netlify and Cloudflare Pages serve only the files here, so a site published there has no account and no shop: its page asks `api/config` once, gets the host's 404, and draws neither. The page calls the recognition routes at `TVSHAM_SERVER_URL` as before. Give the site an origin of its own (see below): every page on the origin can act as the signed-in visitor through `/api/`.
+
+**What it sells and keeps.** Buy sends the visitor to Stripe's own Checkout page, and only Stripe's signed webhook grants a pack, to the Google account (its id, never the email). On the website an accent on sale is drawn only once `GET /api/me` says it is owned, and Midnight until then; what the browser stores unlocks nothing. That gates a cosmetic: someone who edits the page can draw any accent, which is not worth protecting against. Signing in tells the site a Google account id and, when Google says it is verified, the email address, which is kept only with the session; the site keeps the account id, what was bought and Stripe's customer id. Delete account removes all of that (the payment stays with Stripe). The kit keeps its records in `KIT_DATA_DIR`, one process per directory; in Docker that is the `account` volume, so a purchase outlives the container.
+
+Owner's checklist: Google Cloud (consent screen, the Web client and its redirect URI), Stripe (the three Products and Prices, the webhook endpoint and its events, the restricted key; test mode first, card `4242 4242 4242 4242`), and the server's variables above with `CORS_ORIGIN` set to the site's origin. `apps/server/kit/README.md` has the details, and what it cannot cover: purchases in the phone apps, which need StoreKit and Play Billing.
 
 ### Run the app
 
@@ -159,7 +184,7 @@ Both modes take an optional one-line hint ("90s sitcom", "on Netflix"). Anything
 
 Dark by default, with a full light palette that follows the system or can be pinned in Settings, and four accent packs. While a clip is being taken, sonar rings pulse out of the capture button and the button breathes, so the wait reads as listening rather than hanging; corner brackets frame where to point. Results lead with a confidence ring (green, amber, red) instead of a bare percentage, over a poster backdrop blurred to fill the card. All animation is native-driven so the camera preview stays smooth.
 
-Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
+Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable, and every pack ships unlocked in it. On a website whose server sells the packs (see [The website's account and shop](#the-websites-account-and-shop)), a pack on sale is selectable and drawn only once the server says the signed-in visitor owns it, whatever that list says.
 
 #### When the server is out of reach
 
@@ -180,6 +205,7 @@ TVSHAM_SERVER_URL=https://tvsham.example.com npm run build:web --workspace apps/
 - `TVSHAM_SERVER_URL` is the recognition server the site talks to. The build writes its origin into the site's Content-Security-Policy as the only address the page may call, and makes it the app's server address; Settings shows it and cannot change it, because the browser would refuse any other. Without it the build stops: a site with no server can identify nothing.
 - `WEB_BASE_URL` (optional) is the path when the site is not at the root of its origin: `/tvsham` for `example.com/tvsham/`. The host configs below are written for a site at the root; under a path, add the prefix to the paths in them.
 - On the server, set `CORS_ORIGIN` to the origin the site is served from, and set `APP_TOKEN`. The server answers the site's preflight for that origin and refuses every other.
+- The account and the shop, when the server has them on, are at the site's own `/api/`, which the site's reverse proxy sends to the server ([The website's account and shop](#the-websites-account-and-shop)). Where nothing answers there, the page draws neither.
 - Serve both over HTTPS. A page served over HTTPS cannot call an `http:` server (the browser blocks it as mixed content), and the policy upgrades the page's own requests to HTTPS. So the build refuses an `http:` server address unless it is on the same machine (`127.0.0.1`, `localhost`, `[::1]`, a `.localhost` name), the one place a browser leaves plain http alone.
 
 Publish `apps/mobile/dist`, the build's output, and never the repository: `.git/` holds its whole history. The output is the page, the bundle and its assets (content-hashed names), `404.html`, `site.css`, `guard.js`, `favicon.ico`, `robots.txt`, `.well-known/security.txt`, and the config file for each host (`_headers` and `_redirects` for Netlify and Cloudflare Pages, `.htaccess` for Apache; each host ignores the others'). Netlify, Apache and nginx refuse to serve all three. Cloudflare Pages does not serve `_headers` or `_redirects` but takes no 404 rule, so there `.htaccess` is served as a plain file: it holds the site's public headers and the server's origin, nothing secret. For nginx, copy `apps/mobile/deploy/nginx.conf` into the server's configuration and put the server's origin where it says `TVSHAM_SERVER_ORIGIN`. Each config redirects HTTP to HTTPS where it can, serves the app's routes (`/settings`, `/library`, `/result`) as the one page, refuses dotfiles (but `/.well-known/`) and the hosting files, lists no folders, and answers everything else with `404.html` and a 404.
@@ -188,7 +214,7 @@ Publish `apps/mobile/dist`, the build's output, and never the repository: `.git/
 
 | Header | Value | Why |
 | --- | --- | --- |
-| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'` | Only the site's own script runs, nothing inline and no eval; Trusted Types turn any string-to-HTML sink into an error. The style hash is that of the empty string: react-native-web adds an empty `<style>` and fills it through the CSSOM, and this admits that and no inline style with anything in it. Pictures come from the three hosts the server's results point to (Wikipedia, YouTube, TMDB); the picker reads a chosen video's length through a `blob:` address; the page calls the one server it was built for. Measured in Chromium against a real server by the browser suite, not copied. |
+| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src 'self' TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'` | Only the site's own script runs, nothing inline and no eval; Trusted Types turn any string-to-HTML sink into an error. The style hash is that of the empty string: react-native-web adds an empty `<style>` and fills it through the CSSOM, and this admits that and no inline style with anything in it. Pictures come from the three hosts the server's results point to (Wikipedia, YouTube, TMDB); the picker reads a chosen video's length through a `blob:` address; the page calls the one server it was built for, and its own `api/` (`'self'`: the account and the shop, which the server answers through the site's proxy; Google and Stripe are pages the browser navigates to, which the policy does not govern). Measured in Chromium against a real server by the browser suite, not copied. |
 | `X-Content-Type-Options` | `nosniff` | Files are what their type says. |
 | `X-Frame-Options` | `DENY` | With `frame-ancestors 'none'`: no other site can frame the app and steer its buttons. |
 | `Referrer-Policy` | `no-referrer` | The site is one household's front end to its own server; the pages it links to need not learn its address. |
@@ -240,7 +266,12 @@ the build at a sub-path with the headers exactly as `_headers` writes them, and 
 flow: open the site, test the connection with a token, choose a video, read the answer and its
 pictures, save it, find it again after a reload. It fails on any policy violation, console
 error, page error or request that leaves the site, then checks the 404 page, the refusals, the
-safety net and the page without JavaScript.
+safety net and the page without JavaScript. With the server's account on, it signs in with Google, buys an accent, posts
+Stripe's signed webhook, sees the accent drawn, signs out and deletes the account, Google's and
+Stripe's pages answered by the suite; and on a host with nothing at `api/` it checks the page
+asks once and draws neither. The server's tests run the kit's own self-test first
+(`apps/server/kit/selftest.mjs`), then the account through the Hono app over a real socket with a
+fake Google and a fake Stripe (`apps/server/src/account.test.ts`).
 
 CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test, a Metro bundle of the app for Android and the web and the browser suite, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
 
@@ -253,6 +284,8 @@ apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker), also bu
   scripts/       build-web.mjs builds the site; make-icons.mjs draws the icons
   e2e/           the browser suite and the static host it serves the site through
 apps/server      Node 22 + Hono server (ffmpeg, @anthropic-ai/sdk)
+  kit/           the shared sign-in, shop and webhook kit, byte for byte; mounted below /api/
+  src/account.ts the kit in this server; src/catalogue.ts what it sells; src/testing/ the fakes
 packages/shared  Types shared by both (Identification, RecognitionResult, ...)
 ```
 
@@ -270,7 +303,7 @@ Everything below needs a device build or an outside relationship to do properly,
 **Needs something outside the code**
 
 - **Affiliate revenue.** TMDB's terms only permit linking to their own watch page, which is what the app does. Per-click revenue would mean a direct relationship with each streaming or rental service.
-- **Purchases.** The pieces a store would attach to already exist: `Settings.unlockedAccents` gates the accent packs, and `DAILY_CLIP_LIMIT` enforces a per-device ceiling server-side. What is missing is receipt validation, which needs a real store account. Two things worth not building: ads on the result screen, which would spoil the one moment the app exists for, and paywalling an answer after the clip was recorded, which reads as a ransom.
+- **Purchases in the phone apps.** The website sells the accent packs through Stripe (above). In the apps, the pieces a store would attach to already exist: `Settings.unlockedAccents` gates the accent packs, and `DAILY_CLIP_LIMIT` enforces a per-device ceiling server-side. What is missing is StoreKit and Play Billing and their receipt validation, which need real store accounts. Two things worth not building: ads on the result screen, which would spoil the one moment the app exists for, and paywalling an answer after the clip was recorded, which reads as a ransom.
 - **Sync and export.** A cloud watchlist, or one-tap export to Trakt, Letterboxd or Notion. The library is device-only today and each export target is its own OAuth integration.
 
 **Open questions**

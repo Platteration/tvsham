@@ -24,6 +24,12 @@ export const KEYS = {
    * where it is.
    */
   token: "tvsham.token.v1",
+  /**
+   * The website only, in sessionStorage: the accent pack this tab sent to Stripe's Checkout, so
+   * the thank-you on the way back can name it. Read once and removed; it unlocks nothing, which
+   * only the server's GET api/me does (account-model.ts).
+   */
+  checkout: "tvsham.checkout.v1",
 } as const;
 
 /** Decorative motion: follow the phone's accessibility setting, or pin it. */
