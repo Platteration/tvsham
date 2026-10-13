@@ -6,7 +6,10 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { createWriteStream } from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   CONFIDENT_THRESHOLD,
   MAX_CLIPS_PER_SESSION,
@@ -26,6 +29,7 @@ import { createSession, deleteSession, getSession, sessionCount, sweepSessions, 
 import { enrich } from "./tmdb.js";
 import { sttProvider } from "./stt.js";
 import { createUsageStore } from "./usage.js";
+import { boundedUpload, UploadAborted, UploadAdmission, UploadTooLarge } from "./uploads.js";
 
 /** Frames one session may carry into a single recognition request. */
 const MAX_EVIDENCE_FRAMES = 24;
@@ -33,6 +37,7 @@ const MAX_EVIDENCE_FRAMES = 24;
 const app = new Hono();
 const limiter = new Limiter(config.maxConcurrent);
 const usage = createUsageStore(config.dailyClipLimit);
+const uploads = new UploadAdmission();
 
 /**
  * Who to bill a clip to. This has to be something the caller cannot choose, so
@@ -82,13 +87,49 @@ app.use(
   "/sessions",
   bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: "body too large" }, 413) }),
 );
-app.use(
-  "/sessions/:id/clips",
-  bodyLimit({
-    maxSize: config.maxUploadBytes,
-    onError: (c) => c.json({ error: "clip too large" }, 413),
-  }),
-);
+// Admission must precede *any* body reader. Hono's bodyLimit buffers chunked
+// bodies before the route runs and trusts Content-Length for other requests.
+app.use("/sessions/:id/clips", async (c, next) => {
+  if (c.req.method !== "POST") return next();
+  const s = getSession(c.req.param("id"));
+  if (!s) return c.json({ error: "no such session" }, 404);
+  const headerKey = cleanClipKey(c.req.header("x-clip-key"));
+  if (headerKey && s.seenClipKeys.has(headerKey)) {
+    const settled = await settledWithin(s.busy, config.retryWaitMs);
+    if (settled) return c.json(describe(s));
+    c.header("Retry-After", "5");
+    return c.json({ ...describe(s), message: "Still analysing this clip." }, 202);
+  }
+  if (s.clips >= MAX_CLIPS_PER_SESSION) {
+    return c.json({ ...describe(s), wantsMore: false, message: "Clip limit reached for this session." });
+  }
+  if (usage.remaining(caller(c)) <= 0) return overLimit(c, s);
+  // A caller can invent sessions and lengths, so neither is the global quota.
+  // Reserve the maximum body size rather than trusting a small declared size.
+  const release = uploads.tryAcquire(s.id, config.maxUploadBytes, {
+    uploads: config.maxUploads,
+    sessionUploads: config.maxSessionUploads,
+    bytes: config.maxUploadBytesInFlight,
+  });
+  if (!release) {
+    c.header("Retry-After", "5");
+    return c.json({ error: "server busy, try again shortly" }, 503);
+  }
+  let dispose: (() => Promise<void>) | undefined;
+  try {
+    const declared = c.req.header("content-length");
+    if (declared && /^\d+$/.test(declared) && Number(declared) > config.maxUploadBytes) {
+      return c.json({ error: "clip too large" }, 413);
+    }
+    const bounded = boundedUpload(c.req.raw, config.maxUploadBytes);
+    dispose = bounded.dispose;
+    c.req.raw = bounded.request;
+    await next();
+  } finally {
+    await dispose?.();
+    release();
+  }
+});
 
 app.get("/health", async (c) => {
   const body: HealthResponse = {
@@ -158,7 +199,14 @@ app.post("/sessions/:id/clips", async (c) => {
   // An over-quota caller should not get to make us buffer the body at all. The
   // quota itself is only spent further down, once the clip is really analysed.
   if (usage.remaining(billTo) <= 0) return overLimit(c, s);
-  const form = await c.req.parseBody();
+  let form: Awaited<ReturnType<typeof c.req.parseBody>>;
+  try {
+    form = await c.req.parseBody();
+  } catch (err) {
+    if (err instanceof UploadTooLarge) return c.json({ error: "clip too large" }, 413);
+    if (err instanceof UploadAborted) return c.json({ error: "upload cancelled" }, 408);
+    return c.json({ error: "invalid multipart upload" }, 400);
+  }
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
   if (clip.size > config.maxUploadBytes) return c.json({ error: "clip too large" }, 413);
@@ -171,6 +219,9 @@ app.post("/sessions/:id/clips", async (c) => {
   // concurrent uploads would otherwise all pass an entry check and run together,
   // and a clip turned away here must not have spent a daily unit.
   const work: Promise<Outcome> = s.busy.then(() => {
+    // A disconnected upload waiting behind another clip must not start costly
+    // decoding. Its reservation remains held until this closure releases File.
+    if (c.req.raw.signal.aborted) return { result: { ...describe(s), message: "Upload cancelled." }, status: 408 as const };
     if (clipKey && s.seenClipKeys.has(clipKey)) return { result: describe(s) };
     if (s.clips >= MAX_CLIPS_PER_SESSION) {
       return { result: { ...describe(s), wantsMore: false, message: "Clip limit reached for this session." } };
@@ -199,12 +250,14 @@ app.post("/sessions/:id/clips", async (c) => {
 });
 
 async function processClip(s: Session, clip: File, clipKey?: string): Promise<void> {
-  const workDir = path.join(config.tmpDir, `${s.id}-${s.clips}`);
-  await fs.mkdir(workDir, { recursive: true });
+  await fs.mkdir(config.tmpDir, { recursive: true, mode: 0o700 });
+  const workDir = await fs.mkdtemp(path.join(config.tmpDir, `${s.id}-`));
   const ext = safeExtension(clip.name);
   const clipPath = path.join(workDir, `clip${ext}`);
   try {
-    await fs.writeFile(clipPath, Buffer.from(await clip.arrayBuffer()));
+    // Multipart parsing is bounded by admission and the actual-byte cap. Avoid
+    // another whole-clip ArrayBuffer/Buffer copy when persisting the accepted file.
+    await pipeline(Readable.fromWeb(clip.stream() as import("node:stream/web").ReadableStream), createWriteStream(clipPath, { flags: "wx", mode: 0o600 }));
     // Refuse absurd dimensions or lengths before decoding anything from them.
     const { seconds: duration } = await assertDecodable(clipPath);
     const looked = Math.min(duration || config.maxClipSeconds, config.maxClipSeconds);
@@ -250,7 +303,7 @@ async function processClip(s: Session, clip: File, clipKey?: string): Promise<vo
 /** What the per-session work chain resolves to: a body, and the status to send it with. */
 interface Outcome {
   result: RecognitionResult;
-  status?: 429;
+  status?: 408 | 429;
 }
 
 function overLimitResult(s: Session): RecognitionResult {
