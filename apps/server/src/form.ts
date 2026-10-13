@@ -47,8 +47,10 @@ const CONTENT_TYPE =
  * parser will use, so this takes only the spellings where the boundary can be
  * read one way - `multipart/form-data` with that one parameter, as a token or as
  * a quoted string with no escapes in it. That is what every client of the route
- * sends: the app on iOS (70 characters of [A-Za-z0-9._-]) and on Android (a
- * UUID), browsers (`----WebKitFormBoundary…`), Node's own FormData and curl.
+ * sends: the app on a phone, through React Native's XMLHttpRequest, on iOS (70
+ * characters of [A-Za-z0-9._-]) and on Android (a UUID), browsers
+ * (`----WebKitFormBoundary…`), Node's own FormData and curl - and expo/fetch
+ * (`----ExpoFetchFormBoundary…`), which the app does not upload through.
  * urlencoded, and every other type, is refused: the route takes a file.
  */
 export function clipFormBoundary(contentType: string | undefined): string | null {

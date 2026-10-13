@@ -245,6 +245,55 @@ describe("identification loop", () => {
     assert.equal(h.states.at(-1)?.error, null);
   });
 
+  it("says the clip is gone, and what to do, when it could not be kept for later", async () => {
+    // A browser has nowhere to keep a clip (enqueue answers null there), and neither does a
+    // phone whose storage refused it. The network's own words ("Failed to fetch", "Load
+    // failed") say neither that nor what to do next.
+    const offline = () => {
+      throw new TypeError("Failed to fetch");
+    };
+    const notKept = async () => null;
+    const picked = harness({ createSession: async () => offline(), enqueue: notKept });
+    await runIdentification(picked.deps, { source: "screen", producer: producer(["blob:x"]), maxClips: 4 });
+    assert.deepEqual(picked.states.at(-1), {
+      phase: "error",
+      clip: 1,
+      result: null,
+      error: "Couldn’t reach the server. The video was not kept: choose it again once the server answers.",
+    });
+
+    const recorded = harness({ upload: async () => offline(), enqueue: notKept });
+    await run(recorded, producer(["a.mp4"]));
+    assert.equal(
+      recorded.states.at(-1)?.error,
+      "Couldn’t reach the server. The clip could not be kept for later: record it again once the server answers.",
+    );
+
+    // A deadline keeps its own sentence, which names what to check.
+    const late = Object.assign(new Error("Sending the clip took longer than 180s. Check the server address in Settings."), { name: "TimeoutError" });
+    const slow = harness({
+      upload: async () => {
+        throw late;
+      },
+      enqueue: notKept,
+    });
+    await runIdentification(slow.deps, { source: "screen", producer: producer(["blob:x"]), maxClips: 4 });
+    assert.equal(
+      slow.states.at(-1)?.error,
+      "Sending the clip took longer than 180s. Check the server address in Settings. The video was not kept: choose it again once the server answers.",
+    );
+
+    // The server's own refusal is still its own words: the clip was never the network's to lose.
+    const refused = harness({
+      upload: async () => {
+        throw new FakeApiError("clip too large");
+      },
+      enqueue: notKept,
+    });
+    await run(refused, producer(["a.mp4"]));
+    assert.equal(refused.states.at(-1)?.error, "clip too large");
+  });
+
   it("does not keep a clip the server itself rejected", async () => {
     const h = harness({
       upload: async () => {

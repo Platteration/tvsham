@@ -8,8 +8,9 @@
 // access token, choose a video, read the answer with its pictures, save it, find it in the library
 // after a reload. It fails on any Content-Security-Policy violation, any console error, any page
 // error, and any request that leaves the site other than to the server it was built for and the
-// three picture hosts the policy names, which are answered here. Then it checks the not-found
-// page, the hosting files' refusals, the safety net and the page without JavaScript.
+// three picture hosts the policy names, which are answered here. Then it checks what a chosen video
+// comes to with the server out of reach, the not-found page, the hosting files' refusals, the
+// safety net and the page without JavaScript.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -155,6 +156,8 @@ const browser = await chromium.launch();
  * (nosniff) with a line of its own.
  */
 let expect404 = false;
+/** The console error Chromium logs for a request to a server that is not there, in the step that stages one. */
+let expectUnreachable = false;
 
 /** Fail on every violation, console error and page error a page reports. */
 async function watched(contextOptions = {}) {
@@ -181,7 +184,13 @@ async function watched(contextOptions = {}) {
     const text = m.text();
     if (text.startsWith("securitypolicyviolation")) problem(text);
     else if (m.type() === "warning") warnings.add(text.split("\n")[0].slice(0, 200));
-    else if (m.type() === "error" && !(expect404 && /status of 404|MIME type \('text\/html'\) is not executable/.test(text))) problem(`console error: ${text}`);
+    else if (
+      m.type() === "error" &&
+      !(expect404 && /status of 404|MIME type \('text\/html'\) is not executable/.test(text)) &&
+      !(expectUnreachable && /^Failed to load resource: net::ERR_CONNECTION_REFUSED$/.test(text))
+    ) {
+      problem(`console error: ${text}`);
+    }
   });
   page.on("pageerror", (e) => problem(`page error: ${e.message}`));
   page.on("response", (res) => checkHeaders(res));
@@ -287,6 +296,24 @@ try {
   await page.getByRole("link", { name: "Open TVsham" }).click();
   await page.getByRole("button", { name: "Choose a video" }).waitFor();
   await context.close();
+
+  step("with the server out of reach, a chosen video is said to be not kept, and what to do");
+  {
+    // A browser has nowhere to keep a clip for later, so the message is the whole of what the
+    // visitor learns: it must say the server was not reached and the video has to be chosen again,
+    // not the network's own "Failed to fetch".
+    const { context: c, page: p } = await watched();
+    await c.route(`${api.origin}/**`, (route) => route.abort("connectionrefused"));
+    expectUnreachable = true;
+    await p.goto(`${site.origin}${BASE}/`);
+    const [chosen] = await Promise.all([p.waitForEvent("filechooser"), p.getByRole("button", { name: "Choose a video" }).click()]);
+    await chosen.setFiles(clip);
+    await p.getByText("Couldn’t identify").waitFor({ timeout: 30_000 });
+    await p.getByText("Couldn’t reach the server. The video was not kept: choose it again once the server answers.").waitFor();
+    assert.equal(await p.getByText("Failed to fetch").count(), 0, "not the network's own words");
+    expectUnreachable = false;
+    await c.close();
+  }
 
   step("the hosting files, the repository's own files, a folder and a missing script are 404s");
   for (const path of [

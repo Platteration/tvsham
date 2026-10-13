@@ -7,6 +7,7 @@ import {
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
 import { Platform } from "react-native";
+import { nativeClipPart, postClipForm, type Answer } from "./clip-upload";
 import { TimeoutError, withDeadline } from "./deadline";
 import { canSendTokenTo } from "./settings";
 import { cleanRecognitionResult, cleanSessionHandle } from "./shapes";
@@ -56,7 +57,7 @@ function errorText(body: unknown): string | null {
   return null;
 }
 
-async function parse<T>(res: Response): Promise<T> {
+async function parse<T>(res: Answer): Promise<T> {
   const text = await res.text();
   let body: unknown = null;
   try {
@@ -132,9 +133,11 @@ function sessionHeaders(
 }
 
 /**
- * Upload one recorded clip. React Native's fetch accepts `{ uri, name, type }`
- * objects in FormData and streams the file from disk; in a browser the part is
- * the picked File itself, held in web-clips.ts under the address it was picked as.
+ * Upload one recorded clip. On a phone the part is the file by its address,
+ * `{ uri, name, type }`, sent through React Native's XMLHttpRequest, which
+ * streams it from disk: SDK 57's global fetch cannot send that part at all
+ * (clip-upload.ts). In a browser the part is the picked File itself, held in
+ * web-clips.ts under the address it was picked as, and the browser's fetch sends it.
  */
 export async function uploadClip(
   session: SessionHandle,
@@ -153,11 +156,10 @@ export async function uploadClip(
     const form = new FormData();
     if (picked) form.append("clip", picked, name);
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
-    else form.append("clip", { uri: fileUri, name, type });
+    else form.append("clip", nativeClipPart(fileUri, name, type));
     form.append("clipKey", clipKey);
     const res = await withDeadline(TIMEOUTS.upload, "Sending the clip", opts.signal, (signal) =>
-      fetch(`${base}/sessions/${session.sessionId}/clips`, {
-        method: "POST",
+      postClipForm(Platform.OS === "web", `${base}/sessions/${session.sessionId}/clips`, {
         headers: sessionHeaders(base, session, { "X-Clip-Key": clipKey }),
         body: form,
         signal,

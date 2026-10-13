@@ -1,7 +1,9 @@
 # TVsham website: response headers for Netlify and Cloudflare Pages, which read this file from the
-# published folder and do not serve it. Apache: see .htaccess. nginx: see deploy/nginx.conf. The
-# policy is also in index.html as a <meta> tag, for a host that sends no headers of its own.
-# The same values are in all of these, and src/website.test.ts fails when they differ.
+# published folder and do not serve it. Apache: see .htaccess. nginx: see deploy/nginx.conf.
+# scripts/build-web.mjs also writes the policy into the built index.html as a <meta> tag, for a
+# host that sends no headers of its own (not into public/index.html, which `expo start --web`
+# serves as it is). The same values are in all of these, and src/website.test.ts fails when they
+# differ.
 #
 # TVSHAM_SERVER_ORIGIN is filled in by scripts/build-web.mjs with the origin of the recognition
 # server the site is built for (TVSHAM_SERVER_URL). Left unfilled it is not a valid source, so the
@@ -36,7 +38,14 @@
 # Cache-Control: the bundle and the assets carry a content hash in their names, so a new build gets
 # new names and they can be kept for a year. Everything else is revalidated on every load. A header
 # two rules set is joined with a comma by both hosts, so every path gets Cache-Control from exactly
-# one rule below; the browser suite checks that on every response.
+# one rule below; the browser suite checks that on every response. A rule here matches the address
+# whatever answers it, so a name under /_expo/static/ or /assets/ that the deploy does not hold may
+# be a 404 marked to keep for a year, which a browser that asked before the file arrived keeps
+# across reloads (the browser suite's host answers it that way). Netlify and Cloudflare Pages
+# publish a deploy whole, and the page is revalidated on every load, so the page never names a file
+# its deploy lacks. Apache and nginx, where a site is copied up file by file, answer such a name
+# with 404.html and no-cache (.htaccess and deploy/nginx.conf say how; measured on Apache 2.4.58
+# and nginx 1.24).
 
 /*
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'

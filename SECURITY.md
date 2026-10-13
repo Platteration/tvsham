@@ -6,7 +6,11 @@ Please report security issues privately rather than opening a public issue.
 
 Use GitHub's private vulnerability reporting on this repository:
 **Security → Report a vulnerability**. That opens a private advisory visible
-only to the maintainers.
+only to the maintainers. If that button is not offered (private reporting is
+switched off on this repository today), open an issue that says you have a
+report, with no details in it, and a private channel will be arranged.
+`/.well-known/security.txt` on the website points at the issues page for that
+reason.
 
 Include what you need to make the problem reproducible: the affected version
 or commit, the steps or input that trigger it, and what you observed. A proof

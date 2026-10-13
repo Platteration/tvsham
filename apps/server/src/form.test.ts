@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { MAX_FORM_PARTS, MAX_PART_HEADER_BYTES, clipFormBoundary, clipFormProblem } from "./form.js";
 
 const enc = (s: string) => Buffer.from(s, "latin1");
@@ -79,23 +82,49 @@ describe("the shape of a clip upload", () => {
   });
 
   it("passes the bodies the phone app sends, which the parser reads as two fields", async () => {
+    // The app sends a clip through React Native's XMLHttpRequest (apps/mobile/src/clip-upload.ts),
+    // whose FormData names each part's headers in lowercase (FormData.getParts) for the
+    // platform's networking to write.
     const clip = "\u0000\u0001video\r\n--not-the-boundary\r\n\r\n";
-    // iOS (RCTNetworking): lowercase header names, a 70-character boundary.
+    // iOS (RCTNetworking): the part headers as given, a 70-character boundary.
     const ios = "aZ09-_.".repeat(10);
     const iosBody = enc(
       `--${ios}\r\ncontent-disposition: form-data; name="clip"; filename="clip.mov"\r\ncontent-type: video/quicktime\r\n\r\n${clip}\r\n` +
         `--${ios}\r\ncontent-disposition: form-data; name="clipKey"\r\n\r\nfile:clip\r\n--${ios}--\r\n`,
     );
-    // Android (OkHttp): a UUID boundary and a Content-Length on every part.
+    // Android (React Native's NetworkingModule over OkHttp): a UUID boundary, the part headers as
+    // given, and OkHttp's own Content-Type and Content-Length after them.
     const okhttp = "3b7c5e1a-9d2f-4c6b-8a1e-0f9d8c7b6a5e";
     const okhttpBody = enc(
-      `--${okhttp}\r\nContent-Disposition: form-data; name="clip"; filename="clip.mp4"\r\nContent-Type: video/mp4\r\nContent-Length: ${clip.length}\r\n\r\n${clip}\r\n` +
-        `--${okhttp}\r\nContent-Disposition: form-data; name="clipKey"\r\nContent-Length: 9\r\n\r\nfile:clip\r\n--${okhttp}--\r\n`,
+      `--${okhttp}\r\ncontent-disposition: form-data; name="clip"; filename="clip.mp4"\r\nContent-Type: video/mp4\r\nContent-Length: ${clip.length}\r\n\r\n${clip}\r\n` +
+        `--${okhttp}\r\ncontent-disposition: form-data; name="clipKey"\r\nContent-Length: 9\r\n\r\nfile:clip\r\n--${okhttp}--\r\n`,
     );
     for (const [boundary, body] of [[ios, iosBody], [okhttp, okhttpBody]] as const) {
       assert.equal(clipFormProblem(body, boundary), null);
       assert.equal(await parsed(body, boundary), 2, "and these are bodies the parser really reads");
     }
+  });
+
+  it("passes the body SDK 57's global fetch on a phone makes of a clip held as a Blob", async () => {
+    // expo/fetch replaced React Native's fetch as the global one in SDK 57 and serialises a
+    // FormData itself: lowercase part headers, a "----ExpoFetchFormBoundary" boundary. The app
+    // does not upload through it (it cannot send a file by its address; clip-upload.ts says
+    // why), but this is the body it would send with the clip read into a Blob, made by Expo's
+    // own serialiser, so the gate is no obstacle should the upload ever move to it.
+    const require = createRequire(import.meta.url);
+    const source = pathToFileURL(join(dirname(require.resolve("expo/package.json")), "src/winter/fetch/convertFormData.ts")).href;
+    const { convertFormDataAsync } = (await import(source)) as {
+      convertFormDataAsync(form: unknown): Promise<{ body: Uint8Array; boundary: string }>;
+    };
+    // React Native's FormData as Expo patches it: [name, value] parts, read through entries().
+    const clip = new Blob([new Uint8Array(4096).fill(7)], { type: "video/mp4" }) as Blob & { name?: string };
+    clip.name = "clip.mp4";
+    const parts: Array<[string, unknown]> = [["clip", clip], ["clipKey", "file:clip"]];
+    const { body, boundary } = await convertFormDataAsync({ _parts: parts, entries: () => parts });
+    assert.match(boundary, /^----ExpoFetchFormBoundary[A-Za-z0-9]{16}$/);
+    assert.equal(clipFormBoundary(`multipart/form-data; boundary=${boundary}`), boundary);
+    assert.equal(clipFormProblem(body, boundary), null);
+    assert.equal(await parsed(body, boundary), 2, "and the parser reads the clip and its key");
   });
 
   it(`refuses more than ${MAX_FORM_PARTS} fields`, async () => {

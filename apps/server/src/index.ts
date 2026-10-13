@@ -207,9 +207,14 @@ export function caller(c: Context): string {
  * carries them from the start: @hono/node-server answers a HEAD by building a
  * new Response from the GET one's original headers, and a header set on the
  * finished response afterwards was lost there (measured: `curl -I` showed none
- * of them). And again once everything else has answered - the routes, the CORS
- * preflight, the Origin and token gates, the body limits, the not-found answer
- * and the error handler - for a response built outside the context.
+ * of them). And again once everything else has answered, for a Response a
+ * handler builds itself (`return new Response(...)` from a route, a not-found
+ * or an error handler): Hono hands that one on as it is, without the headers
+ * set on the context (measured). Every answer this server sends today goes
+ * through the context - the routes, the CORS preflight, the Origin and token
+ * gates, the body limits, the default not-found and error answers - so the
+ * second pass is for the next handler that does not; index.test.ts drives it
+ * with handlers that build their own.
  */
 export const API_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -219,11 +224,12 @@ export const API_HEADERS: Readonly<Record<string, string>> = {
   "Cross-Origin-Resource-Policy": "same-origin",
   "Cache-Control": "no-store",
 };
-app.use("*", async (c, next) => {
+export async function apiHeaders(c: Context, next: Next): Promise<void> {
   for (const [name, value] of Object.entries(API_HEADERS)) c.header(name, value);
   await next();
   for (const [name, value] of Object.entries(API_HEADERS)) c.res.headers.set(name, value);
-});
+}
+app.use("*", apiHeaders);
 
 /**
  * The session id is a capability: it is the only thing the session routes ask

@@ -8,9 +8,11 @@ import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { CreateSessionResponse } from "@tvsham/shared";
 import { config } from "./config.js";
+import { Hono } from "hono";
 import {
   API_HEADERS,
   addressBucket,
+  apiHeaders,
   app,
   caller,
   cleanClipKey,
@@ -354,6 +356,28 @@ describe("http", () => {
     for (const [name, value] of Object.entries(API_HEADERS)) {
       assert.ok(readme.includes(`\`${name}: ${value}\``), `README.md quotes ${name}: ${value}`);
     }
+  });
+
+  it("sends them on a Response a handler builds itself, which Hono passes on without the context's", async () => {
+    // Nothing in this server answers that way today; the second pass in apiHeaders is there for
+    // the first handler that does. Without it, each of these went out with none of the headers.
+    const probe = new Hono();
+    probe.use("*", apiHeaders);
+    probe.get("/route", () => new Response("built here"));
+    probe.get("/throws", () => {
+      throw new Error("boom");
+    });
+    probe.notFound(() => new Response("not here", { status: 404 }));
+    probe.onError(() => new Response("failed", { status: 500 }));
+    for (const [path, status] of [["/route", 200], ["/nowhere", 404], ["/throws", 500]] as const) {
+      const res = await probe.request(path);
+      assert.equal(res.status, status, path);
+      for (const [name, value] of Object.entries(API_HEADERS)) assert.equal(res.headers.get(name), value, `${path}: ${name}`);
+    }
+    // And the server itself is wrapped in this same middleware, first.
+    const source = await fs.readFile(new URL("./index.ts", import.meta.url), "utf8");
+    assert.match(source, /^app\.use\("\*", apiHeaders\);$/m);
+    assert.equal(source.indexOf("app.use("), source.indexOf('app.use("*", apiHeaders);'), "registered before every other middleware");
   });
 
   it("404s for unknown sessions", async () => {

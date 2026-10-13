@@ -1,8 +1,8 @@
 /**
  * Videos picked in a browser, held by the address the picker gave them.
  *
- * On a phone a clip is a file on disk, and React Native's fetch streams it
- * from a `{ uri, name, type }` part. A browser has no such part: expo-image-picker
+ * On a phone a clip is a file on disk, and React Native's XMLHttpRequest streams
+ * it from a `{ uri, name, type }` part (clip-upload.ts). A browser has no such part: expo-image-picker
  * hands back a `blob:` address and the File behind it, and the upload needs the
  * File itself. Fetching the `blob:` address back would work too, but only with
  * `blob:` in the site's connect-src, which is otherwise the recognition server

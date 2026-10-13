@@ -9,8 +9,12 @@
 //    joined with ", ", which is what Netlify and Cloudflare Pages do (and why each file must get
 //    Cache-Control from exactly one rule).
 //  - _redirects: the first rule whose path matches wins, and a 200 serves the target in place.
-//    As on Netlify, a rule without "!" does not shadow a file that exists, except a 404 rule,
-//    which this server applies whatever exists so that the site's own refusals are tested.
+//    As on Netlify, a rule without "!" does not apply where a file exists, whatever its status,
+//    which is why the site's refusals of its own hosting files are written `404!`.
+//  - A 404 carries the headers _headers gives the address that was asked for, not those of
+//    /404.html: the file matches addresses and has no rule by status. So a missing name under
+//    /_expo/static/ is a 404 marked immutable here; Apache and nginx answer one with no-cache
+//    (public/_headers, "Cache-Control").
 //  - Paths in both files are relative to the site's root, wherever the site is mounted: the
 //    folder is served under `base` the way a host serves a publish folder at a path.
 import { createServer } from "node:http";
@@ -131,7 +135,7 @@ export function siteHandler({ dir, base = "", log = [] }) {
     const existing = fileFor(dir, sitePath);
     for (const rule of redirects) {
       if (!pathMatches(rule.from, sitePath)) continue;
-      if (existing && !rule.force && rule.status !== 404) break;
+      if (existing && !rule.force) break;
       if (rule.status === 200 || rule.status === 404) {
         const target = fileFor(dir, rule.to);
         if (!target) return notFound();

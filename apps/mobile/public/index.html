@@ -1,16 +1,25 @@
 <!doctype html>
+<!--
+  The page the site is served as: `expo export` reads this template in place of Expo's own and adds
+  the favicon link and the bundle's deferred script. `expo start --web` serves it as it is, so the
+  template carries neither the Content-Security-Policy nor the base path. scripts/build-web.mjs
+  writes the policy into the built page as a meta tag, from public/_headers less frame-ancestors
+  (a meta tag cannot carry it), for a host that sends no headers of its own; the development
+  server needs what the policy refuses (a socket to reload over, HTML written from strings for its
+  error overlay, an address of its own to call). And it moves site.css and guard.js, named here
+  from the root where the development server finds them, under WEB_BASE_URL.
+-->
 <html lang="%LANG_ISO_CODE%" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0b0b10">
 <meta name="description" content="Point TVsham at a video on this device and get the Wikipedia article or YouTube link for what is playing.">
 <title>%WEB_TITLE%</title>
-<link rel="stylesheet" href="%BASE_URL%/site.css">
-<script src="%BASE_URL%/guard.js"></script>
+<link rel="stylesheet" href="/site.css">
+<script src="/guard.js"></script>
 </head>
 <body>
 <noscript><div class="site-note" role="alert"><strong>TVsham needs JavaScript.</strong> The app runs in your browser and talks only to the TVsham server this site was set up for. Turn JavaScript on for this site and reload the page.</div></noscript>

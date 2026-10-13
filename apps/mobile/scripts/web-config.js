@@ -11,7 +11,7 @@
  */
 const SERVER_ORIGIN_TOKEN = "TVSHAM_SERVER_ORIGIN";
 
-/** Where the site's base path goes in index.html and 404.html; empty for a site at the root. */
+/** Where the site's base path goes in 404.html and .htaccess; empty for a site at the root. */
 const BASE_URL_TOKEN = "%BASE_URL%";
 
 /**
@@ -37,6 +37,36 @@ function serverUrlFrom(raw) {
   return text;
 }
 
+/** The loopback names: the one place a browser lets a page reach a server over plain http. */
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * The server address a website build is made for: serverUrlFrom's, and https unless the server
+ * is on this machine. The site's policy carries upgrade-insecure-requests, so a browser turns the
+ * page's own http requests into https ones, and a page served over https may not call an http
+ * server at all (mixed content). Measured in Chromium with the site and the server on a LAN address
+ * over http: the stylesheet, the safety net and the bundle were requested over https, failed, and
+ * the page never started. Only a loopback address is exempt from both, which is where the browser
+ * suite runs. A build that cannot work stops here rather than reporting success.
+ */
+function siteServerUrlFrom(raw) {
+  const text = serverUrlFrom(raw);
+  if (text) {
+    const url = new URL(text);
+    if (url.protocol === "http:" && !isLoopbackHost(url.hostname)) {
+      throw new Error(
+        `TVSHAM_SERVER_URL must be https:// for a server on another machine, not ${JSON.stringify(text)}: ` +
+          "the site's policy upgrades its requests to https and a browser blocks an https page's calls to an http server. " +
+          "Put the server behind TLS (README, \"Run it as a website\"); plain http works only for 127.0.0.1 or localhost.",
+      );
+    }
+  }
+  return text;
+}
+
 /** The server's origin, as the CSP names it: scheme, host and port. */
 function serverOriginOf(serverUrl) {
   return new URL(serverUrl).origin;
@@ -52,4 +82,4 @@ function baseUrlFrom(raw) {
   return text;
 }
 
-module.exports = { SERVER_ORIGIN_TOKEN, BASE_URL_TOKEN, serverUrlFrom, serverOriginOf, baseUrlFrom };
+module.exports = { SERVER_ORIGIN_TOKEN, BASE_URL_TOKEN, serverUrlFrom, siteServerUrlFrom, serverOriginOf, baseUrlFrom };

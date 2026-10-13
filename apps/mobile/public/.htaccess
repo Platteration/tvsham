@@ -1,7 +1,8 @@
 # TVsham website: Apache 2.4 settings (mod_rewrite, mod_headers). Netlify and Cloudflare Pages read
 # _headers instead; nginx: see deploy/nginx.conf. The same values are in all of them, and in the
-# <meta> policy in index.html; src/website.test.ts fails when they differ, and _headers says what
-# each source is for. scripts/build-web.mjs fills in TVSHAM_SERVER_ORIGIN and the base path.
+# <meta> policy scripts/build-web.mjs writes into index.html; src/website.test.ts fails when they
+# differ, and _headers says what each source is for. The build fills in TVSHAM_SERVER_ORIGIN and
+# the base path.
 
 Options -Indexes
 ServerSignature Off
@@ -41,7 +42,10 @@ ErrorDocument 403 %BASE_URL%/404.html
   Header always set Cross-Origin-Opener-Policy "same-origin"
   Header always set Cross-Origin-Resource-Policy "same-origin"
   Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
-  # the bundle and the assets carry a content hash in their names; everything else is revalidated
+  # the bundle and the assets carry a content hash in their names; everything else is revalidated,
+  # and so is a name under those folders that this site does not hold: ErrorDocument answers it as
+  # /404.html, which is the REQUEST_URI the <If> then sees, so a page copied up ahead of its bundle
+  # does not leave a browser holding that 404 for a year (measured on Apache 2.4.58)
   Header always set Cache-Control "no-cache"
   <If "%{REQUEST_URI} =~ m#/(_expo/static|assets)/#">
     Header always set Cache-Control "public, max-age=31536000, immutable"
