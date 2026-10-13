@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "test": "node --import tsx --test \"src/*.test.ts\"",
-    "test:e2e": "node --import tsx e2e/web.mjs"
+    "test:e2e": "node e2e/proxy.mjs && node --import tsx e2e/web.mjs"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.15",

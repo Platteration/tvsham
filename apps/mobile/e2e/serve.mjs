@@ -18,10 +18,13 @@
 //  - Paths in both files are relative to the site's root, wherever the site is mounted: the
 //    folder is served under `base` the way a host serves a publish folder at a path.
 //  - With `api`, the one thing that is not a file: everything under `<base>/api/` goes to the
-//    recognition server as deploy/nginx.conf's `location ^~ /api/` sends it - the path unchanged,
-//    the server's answer as it gave it, with only the header that location adds - so the website's
-//    account and shop are on the site's own origin. Without it, `<base>/api/config` is a missing
-//    file like any other, which is what a static host answers.
+//    recognition server as deploy/nginx.conf's `location ^~ /api/` sends it - chosen by the path
+//    as nginx reads it (nginxPath), a target with a backslash in its path refused with a 400, the
+//    target passed on exactly as the client wrote it, the address the request came from appended
+//    to X-Forwarded-For, and the server's answer as it gave it, with only the header that location
+//    adds - so the website's account and shop are on the site's own origin. Without it,
+//    `<base>/api/config` is a missing file like any other, which is what a static host answers.
+//    e2e/proxy.mjs runs the same requests through this and through nginx with deploy/nginx.conf.
 import { createServer, request as forward } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
@@ -106,13 +109,54 @@ function fileFor(dir, sitePath) {
 }
 
 /**
- * Hands a request to the recognition server at `origin` as nginx's proxy_pass with no URI does:
- * the same method, path, query, headers and body, and the answer back as it came, every
- * Set-Cookie included, with `extra` (the location's own add_header lines) on top.
+ * The path nginx chooses a location by, for a request target: the part before `?` (or `#`),
+ * percent-decoded, `//` merged, and `.` and `..` resolved, with `/` the only separator - on Unix
+ * nginx reads a backslash as a character, where a URL parser reads it as a slash. Null for a
+ * target nginx refuses itself (an escape that does not decode, `..` above the root).
+ */
+export function nginxPath(target) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(target.split(/[?#]/, 1)[0] ?? "");
+  } catch {
+    return null;
+  }
+  if (!decoded.startsWith("/")) return null;
+  const parts = decoded.split("/");
+  const kept = [];
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    const last = i === parts.length - 1;
+    if (part === "" && !last) continue;
+    if (part === "." || part === "..") {
+      if (part === ".." && kept.pop() === undefined) return null;
+      if (last) kept.push("");
+      continue;
+    }
+    kept.push(part);
+  }
+  return `/${kept.join("/")}`;
+}
+
+/**
+ * Hands a request to the recognition server at `origin` as deploy/nginx.conf's `location ^~ /api/`
+ * does: a backslash in the path is a 400 that goes nowhere (the location's `if`); otherwise the
+ * same method, the target exactly as written (proxy_pass with no URI), the headers with the
+ * request's own address appended to X-Forwarded-For ($proxy_add_x_forwarded_for) and the body,
+ * and the answer back as it came, every Set-Cookie included, with `extra` (the location's own
+ * add_header lines) on top.
  */
 function proxy(origin, extra, req, res, done) {
-  const target = new URL(req.url ?? "/", origin);
-  const upstream = forward(target, { method: req.method, headers: { ...req.headers, host: target.host } }, (answer) => {
+  const written = req.url ?? "/";
+  if (written.split("?", 1)[0].includes("\\")) {
+    res.writeHead(400, Object.fromEntries(extra)).end("bad request");
+    done(400);
+    return;
+  }
+  const server = new URL(origin);
+  const forwardedFor = [req.headers["x-forwarded-for"], req.socket.remoteAddress].filter(Boolean).join(", ");
+  const headers = { ...req.headers, host: server.host, "x-forwarded-for": forwardedFor };
+  const upstream = forward({ hostname: server.hostname, port: server.port, path: written, method: req.method, headers }, (answer) => {
     const headers = { ...answer.headers };
     for (const [name, value] of extra) headers[name.toLowerCase()] = value;
     res.writeHead(answer.statusCode ?? 502, headers);
@@ -135,6 +179,13 @@ export function siteHandler({ dir, base = "", log = [], api = null }) {
   const rules = parseHeaders(readFileSync(join(dir, "_headers"), "utf8"));
   const redirects = parseRedirects(readFileSync(join(dir, "_redirects"), "utf8"));
   return (req, res) => {
+    // The api/ location first, chosen as nginx chooses it: by its own reading of the path, which
+    // differs from a URL parser's (a backslash, above all), and ahead of every other rule (^~).
+    const asNginx = nginxPath(req.url ?? "/");
+    if (api && asNginx?.startsWith(`${base}/api/`)) {
+      proxy(api.origin, api.headers ?? [], req, res, (status) => log.push({ method: req.method, path: asNginx, status }));
+      return;
+    }
     let pathname;
     try {
       pathname = decodeURIComponent(new URL(req.url ?? "/", "http://site").pathname);
@@ -155,10 +206,6 @@ export function siteHandler({ dir, base = "", log = [], api = null }) {
       // Outside the mount: what the host's root holds, which is not this site.
       res.writeHead(404, { "Content-Type": "text/plain" }).end("outside the site");
       log.push({ method: req.method, path: pathname, status: 404 });
-      return;
-    }
-    if (api && pathname.startsWith(`${base}/api/`)) {
-      proxy(api.origin, api.headers ?? [], req, res, (status) => log.push({ method: req.method, path: pathname, status }));
       return;
     }
     const sitePath = pathname.slice(base.length) || "/";

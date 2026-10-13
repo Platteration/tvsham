@@ -42,7 +42,7 @@ npm run typecheck                  # every workspace
 npm test                           # node:test in both workspaces (the server's runs kit/selftest.mjs first); no network or API key
 npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)
 npm run check                      # lint, typecheck, test, test:conventions: the gate before a push
-npm run test:e2e                   # the website in Chromium: builds, serves and drives it
+npm run test:e2e                   # the api/ proxy in nginx (e2e/proxy.mjs), then the website in Chromium: builds, serves and drives it
 TVSHAM_SERVER_URL=https://… npm run build:web --workspace apps/mobile   # the website, in apps/mobile/dist
 npm run server                     # tsx watch, port 8787
 npm run mobile                     # expo start
@@ -161,12 +161,28 @@ will pass typecheck and tests but reopen the hole.
   budget. The page's writes carry the site's Origin, so with sign-in on `CORS_ORIGIN` must
   be `APP_URL`'s origin: `accountProblem` stops the server otherwise, as `CORS_ORIGIN=*`
   does. The session is a cookie of the website's origin, so the site's reverse proxy puts
-  `/api/` there (`deploy/nginx.conf`, `location ^~ /api/`); the server serves no site.
+  `/api/` there (`deploy/nginx.conf`, `location ^~ /api/`, under the next invariant); the
+  server serves no site.
   Records live in `KIT_DATA_DIR`, the kit's file store: one process per directory, and the
   image's on the compose volume `account`. The request log prints no query string, since
   the sign-in's callback carries Google's one-time code. The daily cap is untouched: clips
   are still billed to `caller()`. The kit is never edited here (`kit_requests` go to the
   canonical copy), and `npm test` runs its self-test before the server's tests.
+- **A request target is routed as written, by the proxy and by the server.** The site's
+  nginx hands the server `/api/` alone, but the server answers `/health` and `/sessions`
+  too, and the two read a target differently: nginx takes a backslash for an ordinary
+  character and passes the target on as written (proxy_pass with no URI), the server's URL
+  parser takes it for a slash. `/api/..\..\sessions` opened sessions through nginx 1.24,
+  and since the location passed on the client's own `X-Forwarded-For`, under `TRUST_PROXY`
+  the caller chose the bucket the daily cap, the session ceilings and the token's guess
+  limit counted against. So the location refuses a backslash in the path and appends the
+  address it saw (`$proxy_add_x_forwarded_for`), and `targetAsWritten` in `index.ts`
+  refuses, ahead of every route and the account's mount, any target whose path the parser
+  would rewrite (a backslash, a dot segment escaped or not, a `#`), whatever proxy is in
+  front; it reads the raw target off the socket, so `request-target.test.ts` drives it over
+  one. `e2e/proxy.mjs` sends the same raw requests through `deploy/nginx.conf` in a real
+  nginx and through `e2e/serve.mjs`, which emulates that location (its own reading of the
+  path, the target passed on verbatim, the address appended), each in front of a recorder.
 - **The listener binds loopback unless `HOST` says otherwise.** SEC-1 was fixed by
   binding the *published Docker port*; the listener itself still took every interface,
   so `npm run server` on a laptop put an unauthenticated server on every network the
@@ -309,7 +325,8 @@ CSP source, so a site published without the build has, in effect, `connect-src '
   no web implementation and `localStorage` is readable by every script on the origin.
 - **The account and the shop are the site's own `api/`.** `account.ts` asks `api/config`
   once at start (5 s at most) and, when sign-in is on, `api/me`; a 404, an error or a body
-  that is not the kit's is no account, and nothing more is asked, drawn or stored. On a host
+  that is not the kit's is no account, and nothing more is asked, drawn or stored: that visit
+  has no shop, so the record's `unlockedAccents` decides, every pack by default. On a host
   with nothing at `api/` that one 404 is a console line Chromium logs (the browser suite
   counts it by its address). An accent the shop sells is drawn and chosen only once `api/me`
   says it is owned, and Midnight until then (`drawnAccent`, `canUseAccent`); the record's

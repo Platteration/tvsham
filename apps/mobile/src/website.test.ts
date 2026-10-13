@@ -344,10 +344,16 @@ describe("the website's files", () => {
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("#"));
+    // The server behind it answers more than the account, and reads a backslash as a slash where
+    // nginx reads a character: a path with one is refused here, never passed on (e2e/proxy.mjs
+    // runs this in nginx). And the address nginx saw goes on the right of X-Forwarded-For, the
+    // entry the server bills under TRUST_PROXY, so the caller's own header never chooses it.
     assert.deepEqual(directives, [
+      'if ($request_uri ~ "^[^?]*\\x5c") { return 400; }',
       "proxy_pass http://127.0.0.1:8787;",
       "proxy_http_version 1.1;",
       'proxy_set_header Connection "";',
+      "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
       "client_max_body_size 1m;",
       "proxy_read_timeout 30s;",
       `add_header Strict-Transport-Security "${new Map(headersRule("/*")).get("Strict-Transport-Security")}" always;`,

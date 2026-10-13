@@ -1,4 +1,4 @@
-import { serve } from "@hono/node-server";
+import { serve, type HttpBindings } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -254,6 +254,31 @@ app.use(
   "*",
   logger((message, ...rest) => console.log(loggedPath(message), ...rest)),
 );
+
+/**
+ * The path a request is routed by is the path it wrote. A reverse proxy that hands this server
+ * only some of its paths - the website's nginx sends it `/api/` and nothing else
+ * (deploy/nginx.conf) - decides on the request target as nginx reads it and passes it on as the
+ * client wrote it; the URL parser here then rewrites it before any route sees it. A backslash
+ * is a character to nginx and a slash to the parser, and the parser also resolves `..` (`%2e%2e`
+ * too) and drops whatever follows a `#`. So `/api/..\..\health`, which nginx files under `/api/`,
+ * arrived here as `/health`, and `/api/..\..\sessions` opened sessions behind the account's mount
+ * with whatever X-Forwarded-For the caller wrote (measured through nginx 1.24). No browser and no
+ * phone app sends a target the parser would rewrite, so one that does is refused before anything
+ * routes it, whatever proxy is in front. The query is not compared: the parser leaves it as
+ * written. Read from the socket's request, so this applies over the wire; app.request() hands
+ * the app a URL already parsed and has nothing else to compare it with.
+ */
+export async function targetAsWritten(c: Context, next: Next): Promise<Response | void> {
+  const written = (c.env as Partial<HttpBindings> | undefined)?.incoming?.url;
+  if (written?.startsWith("/")) {
+    const query = written.indexOf("?");
+    const path = query === -1 ? written : written.slice(0, query);
+    if (path !== new URL(c.req.url).pathname) return c.json({ error: "request target not as written" }, 400);
+  }
+  return next();
+}
+app.use("*", targetAsWritten);
 // The mobile app is not a browser and needs no CORS. Sending permissive headers
 // by default would let any web page the user visits spend the operator's budget
 // and read back what the household watched, so this is opt-in.

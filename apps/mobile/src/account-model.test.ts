@@ -488,6 +488,14 @@ describe("the website's client", () => {
     reset(() => Response.json({ user: { email: "ada@example.com" }, entitlements: ["accent-mono"] }));
     assert.deepEqual(await web.accountClient.me(), { user: { email: "ada@example.com" }, entitlements: ["accent-mono"] });
     assert.equal(calls[0]?.init.cache, "no-store");
+    // A body in the kit's own shape under a status that is not a success is an error page of
+    // someone's, not an answer: it turns nothing on and owns nothing.
+    for (const status of [500, 502, 404, 403]) {
+      reset(() => Response.json({ auth: { google: true }, shop: { products: [product("sunset")] } }, { status }));
+      assert.equal(await web.accountClient.config(), null, `config answered ${status}`);
+      reset(() => Response.json({ user: { email: "ada@example.com" }, entitlements: ["accent-mono"] }, { status }));
+      assert.equal(await web.accountClient.me(), null, `me answered ${status}`);
+    }
   });
 
   it("signs in by a navigation that comes back to this page", () => {
@@ -517,6 +525,14 @@ describe("the website's client", () => {
       reset(() => Response.json({ error: "x" }, { status }));
       assert.equal(await web.accountClient.checkout("accent-sunset"), result, String(status));
       assert.deepEqual(assigned, []);
+    }
+    // A Checkout address in an answer that is not a success is not followed either.
+    stored.clear();
+    for (const status of [500, 502, 400]) {
+      reset(() => Response.json({ url: "https://checkout.stripe.com/c/pay/x" }, { status }));
+      assert.equal(await web.accountClient.checkout("accent-sunset"), "failed", String(status));
+      assert.deepEqual(assigned, [], `${status}: nothing followed`);
+      assert.equal(stored.has(KEYS.checkout), false, `${status}: no pack remembered`);
     }
   });
 
