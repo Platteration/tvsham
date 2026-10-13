@@ -70,6 +70,12 @@ export const config = {
   dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
   maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
+  /** Accepted uploads, including bodies being parsed and clips waiting for analysis. */
+  maxUploads: positiveInt(env("MAX_UPLOADS"), 6),
+  /** One active clip plus one queued clip per session; further uploads may retry. */
+  maxSessionUploads: positiveInt(env("MAX_SESSION_UPLOADS"), 2),
+  /** Reserve a full body budget per upload, regardless of its declared length. */
+  maxUploadBytesInFlight: positiveInt(env("MAX_UPLOAD_BYTES_IN_FLIGHT"), 6 * 80 * 1024 * 1024),
   /** Longest a retried clip waits for the original analysis before answering. */
   retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */

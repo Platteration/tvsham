@@ -160,6 +160,147 @@ describe("http", () => {
 });
 
 describe("limits", () => {
+  it("does not read bodies rejected by global, session or aggregate admission", async () => {
+    const original = { maxUploads: config.maxUploads, maxSessionUploads: config.maxSessionUploads, maxUploadBytesInFlight: config.maxUploadBytesInFlight };
+    const settings = config as { maxUploads: number; maxSessionUploads: number; maxUploadBytesInFlight: number };
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = await created.json() as { sessionId: string };
+    const second = await app.request("/sessions", { method: "POST" });
+    const other = (await second.json() as { sessionId: string }).sessionId;
+    const abort = new AbortController();
+    let reading!: () => void;
+    const started = new Promise<void>((resolve) => { reading = resolve; });
+    const stalled = new ReadableStream<Uint8Array>({ pull() { reading(); } }, { highWaterMark: 0 });
+    const held = app.fetch(new Request(`http://localhost/sessions/${sessionId}/clips`, {
+      method: "POST", headers: { "content-type": "multipart/form-data; boundary=held" }, body: stalled,
+      signal: abort.signal, duplex: "half",
+    } as RequestInit));
+    await started;
+    const rejectWithoutReading = async (id: string) => {
+      let reads = 0;
+      const body = new ReadableStream<Uint8Array>({ pull(c) { reads++; c.enqueue(new Uint8Array(32)); c.close(); } }, { highWaterMark: 0 });
+      const response = await app.fetch(new Request(`http://localhost/sessions/${id}/clips`, {
+        method: "POST", headers: { "content-type": "multipart/form-data; boundary=x", "transfer-encoding": "chunked" },
+        body, duplex: "half",
+      } as RequestInit));
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("retry-after"), "5");
+      assert.equal(reads, 0, "rejection must happen before the actual stream or multipart reader runs");
+    };
+    try {
+      settings.maxUploads = 1;
+      await rejectWithoutReading(other);
+      settings.maxUploads = 10;
+      settings.maxSessionUploads = 1;
+      await rejectWithoutReading(sessionId);
+      settings.maxSessionUploads = 10;
+      settings.maxUploadBytesInFlight = config.maxUploadBytes;
+      await rejectWithoutReading(other);
+      // A known retry is answered even at saturation and never reads its body.
+      getSession(sessionId)?.seenClipKeys.add("already-done");
+      let duplicateReads = 0;
+      const retry = await app.fetch(new Request(`http://localhost/sessions/${sessionId}/clips`, {
+        method: "POST", headers: { "x-clip-key": "already-done", "content-type": "multipart/form-data; boundary=x" },
+        body: new ReadableStream({ pull(c) { duplicateReads++; c.close(); } }, { highWaterMark: 0 }), duplex: "half",
+      } as RequestInit));
+      assert.equal(retry.status, 200);
+      assert.equal(duplicateReads, 0);
+    } finally {
+      abort.abort();
+      assert.equal((await held).status, 408);
+      Object.assign(settings, original);
+    }
+    // Cancellation frees both the count and byte reservations.
+    settings.maxUploads = 1;
+    try {
+      const form = new FormData();
+      form.set("wrong", "field");
+      assert.equal((await app.request(`/sessions/${other}/clips`, { method: "POST", body: form })).status, 400);
+      assert.equal((await app.request(`/sessions/${other}/clips`, { method: "POST", body: form })).status, 400);
+    } finally {
+      Object.assign(settings, original);
+    }
+  });
+
+  it("counts actual multipart bytes with chunked or falsely small declared lengths and releases failed uploads", async () => {
+    const settings = config as { maxUploadBytes: number; maxUploads: number };
+    const original = { maxUploadBytes: config.maxUploadBytes, maxUploads: config.maxUploads };
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = await created.json() as { sessionId: string };
+    settings.maxUploadBytes = 2048;
+    settings.maxUploads = 1;
+    try {
+      for (const headers of [{ "transfer-encoding": "chunked" }, { "content-length": "1" }]) {
+        const form = new FormData();
+        form.set("clip", new Blob([new Uint8Array(4096)]), "clip.mp4");
+        const raw = new Request("http://localhost", { method: "POST", body: form });
+        const data = new Uint8Array(await raw.arrayBuffer());
+        let offset = 0;
+        let cancelled = false;
+        const body = new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (offset === data.length) { c.close(); return; }
+            const next = Math.min(data.length, offset + 512);
+            c.enqueue(data.slice(offset, next));
+            offset = next;
+          },
+          cancel() { cancelled = true; },
+        }, { highWaterMark: 0 });
+        const response = await app.fetch(new Request(`http://localhost/sessions/${sessionId}/clips`, {
+          method: "POST", headers: { "content-type": raw.headers.get("content-type")!, ...headers }, body, duplex: "half",
+        } as RequestInit));
+        assert.equal(response.status, 413);
+        assert.ok(offset < data.length, "oversized body must stop before the rest is buffered");
+        assert.equal(cancelled, true);
+        // A parse failure must not leave the only admission slot occupied.
+        const missing = new FormData();
+        missing.set("nope", "x");
+        assert.equal((await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: missing })).status, 400);
+      }
+    } finally {
+      Object.assign(settings, original);
+    }
+  });
+
+  it("keeps admission while a parsed clip is queued and does not analyse a cancelled queued clip", async () => {
+    const settings = config as { maxUploads: number };
+    const original = config.maxUploads;
+    const created = await app.request("/sessions", { method: "POST" });
+    const { sessionId } = await created.json() as { sessionId: string };
+    const s = getSession(sessionId)!;
+    let unblock!: () => void;
+    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    s.busy = gate;
+    settings.maxUploads = 1;
+    const abort = new AbortController();
+    const form = new FormData();
+    form.set("clip", new Blob([new Uint8Array(2048)]), "clip.mp4");
+    const queued = app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: form, signal: abort.signal });
+    try {
+      const deadline = Date.now() + 1000;
+      while (s.busy === gate && Date.now() < deadline) await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.notEqual(s.busy, gate, "the multipart File should already be waiting in the session work chain");
+      abort.abort();
+      let reads = 0;
+      const response = await app.fetch(new Request(`http://localhost/sessions/${sessionId}/clips`, {
+        method: "POST", headers: { "content-type": "multipart/form-data; boundary=x" },
+        body: new ReadableStream({ pull(c) { reads++; c.close(); } }, { highWaterMark: 0 }), duplex: "half",
+      } as RequestInit));
+      assert.equal(response.status, 503, "a cancelled waiter still holding File must retain its reservation");
+      assert.equal(reads, 0);
+      unblock();
+      assert.equal((await queued).status, 408);
+      assert.equal(s.clips, 0);
+      const missing = new FormData();
+      missing.set("nope", "x");
+      assert.equal((await app.request(`/sessions/${sessionId}/clips`, { method: "POST", body: missing })).status, 400);
+    } finally {
+      unblock();
+      await queued;
+      settings.maxUploads = original;
+    }
+  });
+
   it("bills a caller by something they cannot choose", async () => {
     // Two requests differing only in the headers a client controls must not
     // land in different buckets, or the daily cap counts nothing.
