@@ -74,6 +74,19 @@ Check it: `curl http://localhost:8787/health` →
 - No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
 - Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
+### Render private beta
+
+`render.yaml` defines a single free Docker web service using `/health`, prompts for
+`ANTHROPIC_API_KEY`, and generates an `APP_TOKEN`. Import it as a Render Blueprint
+after it is available on the configured branch. Automatic deploys are disabled.
+Give testers the service's HTTPS URL and access token to enter in app Settings.
+
+The beta permits one concurrent clip and 20 clips per day per connecting address.
+`TRUST_PROXY` stays off, so testers behind Render's ingress may share that quota.
+Free instances can sleep when idle; sessions and quotas reset when the process
+restarts. Verify a real clip before inviting testers: `/health` checks FFmpeg,
+but does not validate Anthropic credentials or model access.
+
 ### Server configuration
 
 | Variable | Default | Purpose |
