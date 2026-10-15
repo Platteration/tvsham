@@ -83,7 +83,20 @@ Check it: `curl http://localhost:8787/health` →
 - A request whose path the server's URL parser would rewrite is answered `400` before anything routes it: a backslash (which the parser reads as a slash), a `.` or `..` segment, escaped or not, or a `#`. A proxy in front decides by the path as it reads it and passes the target on as the client wrote it, and nginx reads a backslash as an ordinary character, so `/api/..\..\sessions`, which the site's nginx hands on as part of `/api/`, is `/sessions` to the parser: before this refusal it opened sessions there, billed to whatever `X-Forwarded-For` the caller wrote. No browser and no build of the app sends such a path.
 - Uploads are capped at 80 MB and rejected before they are buffered. A clip is taken as `multipart/form-data` and nothing else (any other `Content-Type` is a 415), with at most 8 fields and at most 8 KB of headers opening each, checked before the form is parsed: parsed whole, an 80 MB body of nothing but tiny fields, header lines or urlencoded pairs held the server's event loop for 7 to 15 seconds and spent nothing a caller is limited by. Clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
-#### Server configuration
+### Render private beta
+
+`render.yaml` defines a single free Docker web service using `/health`, prompts for
+`ANTHROPIC_API_KEY`, and generates an `APP_TOKEN`. Import it as a Render Blueprint
+after it is available on the configured branch. Automatic deploys are disabled.
+Give testers the service's HTTPS URL and access token to enter in app Settings.
+
+The beta permits one concurrent clip and 20 clips per day per connecting address.
+`TRUST_PROXY` stays off, so testers behind Render's ingress may share that quota.
+Free instances can sleep when idle; sessions and quotas reset when the process
+restarts. Verify a real clip before inviting testers: `/health` checks FFmpeg,
+but does not validate Anthropic credentials or model access.
+
+### Server configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

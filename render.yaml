@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+services:
+  - type: web
+    name: tvsham-beta
+    runtime: docker
+    repo: https://github.com/Platteration/tvsham
+    branch: claude/video-recognition-app-25d1fy
+    plan: free
+    autoDeployTrigger: "off"
+    dockerfilePath: ./apps/server/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APP_TOKEN
+        generateValue: true
+      - key: DAILY_CLIP_LIMIT
+        value: "20"
+      - key: MAX_CONCURRENT
+        value: "1"
+      # Until ingress forwarding is verified, callers may share one quota bucket.
+      - key: TRUST_PROXY
+        value: "false"
