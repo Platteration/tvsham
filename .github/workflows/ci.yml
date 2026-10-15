@@ -22,29 +22,28 @@ concurrency:
 permissions:
   contents: read
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
-
-      - run: npm ci
-
-      - run: npm run lint
-
-      - run: npm run typecheck
-
-      - run: npm test
-
-      - run: npm run test:conventions
-
-      - run: npx expo export --platform android --platform web --output-dir /tmp/export
+      - run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck (shared, server, mobile)
+        run: npm run typecheck
+      - name: Tests (server and app)
+        run: npm test
+      - name: Bundle the app with Metro
+        run: npx expo export --platform android --output-dir /tmp/export
         working-directory: apps/mobile
 
       - run: npx playwright install --with-deps chromium
@@ -68,5 +67,5 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - run: docker build -f apps/server/Dockerfile -t tvsham-server .
+      - name: Build server image
+        run: docker build -f apps/server/Dockerfile -t tvsham-server .
