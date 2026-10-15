@@ -1,0 +1,44 @@
+{
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "deviceScaleFactor": 2,
+  "accent": "midnight",
+  "renderer": "Chromium / React Native Web 0.21, current unmodified app source",
+  "nativeDeviceCapture": false,
+  "wakeLockEmulated": true,
+  "realRecognitionTested": false,
+  "screens": [
+    {
+      "id": "camera",
+      "label": "Camera access"
+    },
+    {
+      "id": "screen-recording",
+      "label": "Screen recording"
+    },
+    {
+      "id": "library",
+      "label": "Saved library"
+    },
+    {
+      "id": "settings",
+      "label": "Settings"
+    },
+    {
+      "id": "appearance",
+      "label": "Appearance"
+    }
+  ],
+  "diagnostics": [
+    {
+      "theme": "light",
+      "pageErrors": []
+    },
+    {
+      "theme": "dark",
+      "pageErrors": []
+    }
+  ]
+}
