@@ -156,38 +156,13 @@ export const config = {
   /** Clips one device may have analysed per day. 0 turns the cap off. */
   dailyClipLimit: Math.max(0, Math.floor(Number(env("DAILY_CLIP_LIMIT", "0")) || 0)),
   /** How many clips may be analysed at once; the rest queue. Protects the API budget. */
-  maxConcurrent,
-  /**
-   * Uploads that may be resident at once, counted before the body is read.
-   * Each one costs about twice maxUploadBytes in memory while it is in flight,
-   * and analysis is the slow part, so this is the queue in front of
-   * maxConcurrent — and the reason a burst answers 503 instead of exhausting
-   * the heap. Raise it only alongside the memory the process actually has.
-   */
-  maxUploadsInFlight,
-  /**
-   * ...of which one caller may hold this many. A body is only released when it
-   * has all arrived, so a client that dribbles one byte every few seconds holds
-   * a slot for as long as it likes for no cost at all; without a share per
-   * caller, a handful of sockets from one address answers every real upload
-   * with a 503. Half the slots, so one address can never take them all.
-   */
-  maxUploadsPerCaller: positiveInt(env("MAX_UPLOADS_PER_CALLER"), Math.max(1, Math.ceil(maxUploadsInFlight / 2))),
-  /**
-   * Longest the server will wait for a whole request to arrive, and for its
-   * headers. Node's own defaults are 5 minutes and 1 minute, which is how long
-   * a stalled upload holds its slot. Shortening that is what MAX_UPLOADS_IN_FLIGHT
-   * and MAX_UPLOADS_PER_CALLER are really for, so this only has to be longer
-   * than the app will wait: 80 MB is a whole screen recording, and 80 MB in
-   * 120 s is a sustained 5.3 Mbit/s uplink, which is an ordinary mobile
-   * connection rather than a stalled one. Cutting it off there is silent and
-   * self-perpetuating — the app reads a dropped body as a network failure,
-   * queues the clip, and every retry meets the same wall. Node checks for
-   * expiry on its own 30 s interval, so the real cut-off is this plus up to
-   * half a minute.
-   */
-  requestTimeoutMs,
-  headersTimeoutMs: Math.min(positiveInt(env("HEADERS_TIMEOUT_MS"), 15_000), requestTimeoutMs),
+  maxConcurrent: positiveInt(env("MAX_CONCURRENT"), 3),
+  /** Accepted uploads, including bodies being parsed and clips waiting for analysis. */
+  maxUploads: positiveInt(env("MAX_UPLOADS"), 6),
+  /** One active clip plus one queued clip per session; further uploads may retry. */
+  maxSessionUploads: positiveInt(env("MAX_SESSION_UPLOADS"), 2),
+  /** Reserve a full body budget per upload, regardless of its declared length. */
+  maxUploadBytesInFlight: positiveInt(env("MAX_UPLOAD_BYTES_IN_FLIGHT"), 6 * 80 * 1024 * 1024),
   /** Longest a retried clip waits for the original analysis before answering. */
   retryWaitMs: nonNegativeInt(env("RETRY_WAIT_MS"), 45_000),
   /** Sessions idle longer than this are dropped. */
