@@ -12,6 +12,7 @@ import {
   isPrivateHost,
   hydrateSettings,
   motionRuns,
+  pinServer,
   resetPreferences,
   serverUrlWarning,
   shouldReduceMotion,
@@ -201,6 +202,21 @@ describe("hydration", () => {
     for (const raw of [null, undefined, 7, "settings", true, []]) {
       assert.deepEqual(hydrateSettings(raw, undefined, inForce), inForce, String(raw));
     }
+  });
+
+  it("keeps the website on the server it was built for, whatever storage or Settings say", () => {
+    // The site's policy allows that one origin: a stored address from an earlier build,
+    // or one typed in, is a server the browser would refuse.
+    const built = "https://tvsham.example.com";
+    const stored = hydrateSettings({ serverUrl: "https://elsewhere.example", accent: "forest" }, undefined, inForce);
+    assert.equal(stored.serverUrl, "https://elsewhere.example", "hydrate itself keeps a stored address");
+    const pinned = pinServer(stored, built);
+    assert.equal(pinned.serverUrl, built);
+    assert.equal(pinned.accent, "forest", "and nothing else changes");
+    assert.deepEqual({ ...pinned, serverUrl: stored.serverUrl }, stored);
+    assert.equal(pinServer(cleanSettings({ ...pinned, serverUrl: "http://10.0.0.9:8787" }, pinned), built).serverUrl, built);
+    // On a phone nothing is fixed: the user's own address stands.
+    assert.equal(pinServer(stored, null), stored);
   });
 });
 

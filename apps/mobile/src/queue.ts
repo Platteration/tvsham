@@ -1,12 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
+import { Platform } from "react-native";
 import type { CaptureSource, RecognitionResult, SessionHandle } from "@tvsham/shared";
 import { ApiError, createSession, endSession, uploadClip } from "./api";
 import { isHopeless } from "./queue-policy";
 import { KEYS } from "./settings";
 import { cleanQueuedClips } from "./shapes";
 import { setLastResult } from "./store";
+import { releaseClipFile } from "./web-clips";
 
 /**
  * Clips recorded while the server was unreachable. A clip is only worth keeping
@@ -25,6 +27,13 @@ export interface QueuedClip {
 }
 
 const QUEUE_DIR = "pending-clips";
+/**
+ * A browser has no file system to keep a clip in (expo-file-system has no web
+ * implementation), so there nothing is queued: the run reports the failure
+ * instead, and the video the visitor picked is still on their device to pick
+ * again once the server answers.
+ */
+const CAN_QUEUE = Platform.OS !== "web";
 /** Beyond this the queue is more of a disk leak than a feature. */
 const MAX_QUEUED = 10;
 
@@ -48,6 +57,7 @@ function pendingDir(): Directory {
 }
 
 export async function loadQueue(): Promise<void> {
+  if (!CAN_QUEUE) return;
   try {
     const raw = await AsyncStorage.getItem(KEYS.queue);
     // Coerced, not cast: runFlush walks this list unattended on every
@@ -92,6 +102,7 @@ export async function enqueue(
   reason: string,
   hint?: string,
 ): Promise<QueuedClip | null> {
+  if (!CAN_QUEUE) return null;
   try {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // The extension is derived from a path, so it is stripped to letters and
@@ -123,6 +134,10 @@ export async function enqueue(
 
 /** Delete a recording nothing refers to any more. Exported for the identification loop. */
 export function discardFile(uri: string): void {
+  if (!CAN_QUEUE) {
+    releaseClipFile(uri);
+    return;
+  }
   try {
     const f = new File(uri);
     if (f.exists) f.delete();

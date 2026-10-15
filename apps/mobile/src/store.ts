@@ -3,9 +3,19 @@ import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
+import { Platform } from "react-native";
 import type { RecognitionResult, SavedItem, CaptureSource } from "@tvsham/shared";
 import { setHapticsEnabled } from "./feedback";
-import { DEFAULT_SETTINGS, KEYS, cleanServerUrl, cleanSettings, hydrateSettings, resetPreferences, type Settings } from "./settings";
+import {
+  DEFAULT_SETTINGS,
+  KEYS,
+  cleanServerUrl,
+  cleanSettings,
+  hydrateSettings,
+  pinServer,
+  resetPreferences,
+  type Settings,
+} from "./settings";
 import { readSavedItems } from "./shapes";
 
 /* ----------------------------- tiny store core ---------------------------- */
@@ -41,6 +51,14 @@ function createStore<T>(initial: T) {
 const TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
+/**
+ * A browser has no keychain (expo-secure-store has no web implementation), and
+ * the one store it does have, localStorage, is readable by every script on the
+ * site's origin and kept until someone clears it. So on the web the token is
+ * never written anywhere: it lives in memory for as long as the tab is open,
+ * and Settings says so where it is typed.
+ */
+export const TOKEN_IS_SAVED = Platform.OS !== "web";
 /** How many recent identifications to keep around. */
 const HISTORY_LIMIT = 30;
 
@@ -56,7 +74,15 @@ function defaultServerUrl(): string {
   return host ? cleanServerUrl(`http://${host}:8787`) : "";
 }
 
-const settingsStore = createStore<Settings>({ ...DEFAULT_SETTINGS, serverUrl: defaultServerUrl() });
+const BUILT_IN_SERVER = defaultServerUrl();
+/**
+ * On the web the server is the one the site was built for (app.config.js reads
+ * it from TVSHAM_SERVER_URL): see pinServer in settings.ts. On a phone the user
+ * chooses it.
+ */
+const FIXED_SERVER = Platform.OS === "web" ? BUILT_IN_SERVER : null;
+
+const settingsStore = createStore<Settings>({ ...DEFAULT_SETTINGS, serverUrl: BUILT_IN_SERVER });
 // The Vibration setting gates every haptic through a module flag rather than a
 // hook, so the first tap after hydration already obeys it.
 settingsStore.subscribe(() => setHapticsEnabled(settingsStore.get().haptics));
@@ -105,7 +131,7 @@ export function hydrate(): Promise<void> {
       if (savedSettings || token) {
         // Field by field against what is in force: a record from another build
         // (or, on a shared origin, another app) costs at most the fields it got wrong.
-        settingsStore.set((prev) => hydrateSettings(savedSettings, token, prev));
+        settingsStore.set((prev) => pinServer(hydrateSettings(savedSettings, token, prev), FIXED_SERVER));
       }
       // Finish the migration now rather than whenever the user next happens to
       // change a setting: until this record is rewritten the token is still
@@ -150,7 +176,7 @@ async function persistSettings(): Promise<void> {
 }
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  settingsStore.set((prev) => cleanSettings({ ...prev, ...patch }, prev));
+  settingsStore.set((prev) => pinServer(cleanSettings({ ...prev, ...patch }, prev), FIXED_SERVER));
   await Promise.all([persistSettings(), writeToken(settingsStore.get().token)]);
 }
 
@@ -166,6 +192,7 @@ export async function resetSettings(): Promise<void> {
  * then: a device whose keychain refused the write still needs the old one.
  */
 async function readToken(legacy: string | undefined): Promise<{ token: string; migrated: boolean }> {
+  if (!TOKEN_IS_SAVED) return { token: "", migrated: false };
   try {
     const stored = await SecureStore.getItemAsync(KEYS.token);
     if (stored) return { token: stored, migrated: false };
@@ -182,6 +209,7 @@ async function readToken(legacy: string | undefined): Promise<{ token: string; m
 }
 
 async function writeToken(token: string): Promise<void> {
+  if (!TOKEN_IS_SAVED) return;
   try {
     if (token) await SecureStore.setItemAsync(KEYS.token, token, TOKEN_OPTIONS);
     else await SecureStore.deleteItemAsync(KEYS.token);

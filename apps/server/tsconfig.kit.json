@@ -1,0 +1,16 @@
+{
+  // The shared kit (kit/, copied byte for byte from the canonical copy and never edited here),
+  // type-checked under this server's own settings - strict, noUncheckedIndexedAccess, ES2022 with
+  // Node's types and no DOM - with its JavaScript checked through its JSDoc and // @ts-check.
+  // tsconfig.json leaves it out because the server imports it through its .d.ts files and runs
+  // it as it is: nothing in kit/ is compiled into dist.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["kit/*.js", "kit/*.mjs"],
+  "exclude": []
+}

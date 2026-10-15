@@ -170,3 +170,18 @@ export const MAX_CLIPS_PER_SESSION = 4;
  * failure rather than an answer, and so queues and retries into the same wall.
  */
 export const UPLOAD_DEADLINE_MS = 180_000;
+
+/**
+ * The accent packs the website sells, through the recognition server's own /api/ (the shared
+ * kit, apps/server/kit, with Stripe Checkout and its signed webhook). Each is the catalogue
+ * product `accent-<name>` (apps/server/src/catalogue.ts), and a paid one grants the entitlement
+ * of the same id, which `GET api/me` reports and the website reads back. Midnight ships with the
+ * app and is never sold; the phone apps sell nothing.
+ */
+export const SOLD_ACCENTS = ["sunset", "forest", "mono"] as const;
+export type SoldAccent = (typeof SOLD_ACCENTS)[number];
+
+/** The catalogue product, and the entitlement it grants, for a sold accent. */
+export function accentProduct(accent: SoldAccent): string {
+  return `accent-${accent}`;
+}

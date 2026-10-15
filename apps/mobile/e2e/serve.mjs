@@ -1,0 +1,256 @@
+// A static host for the built website that behaves the way the hosts it is written for do: it reads
+// _headers and _redirects (Netlify and Cloudflare Pages syntax) out of the published folder and
+// applies them as written, serves the site under a sub-path, and answers anything it does not hold
+// with 404.html and a 404. The browser suite (web.mjs) loads the site through it, so the headers
+// the browser enforces are the ones the repository ships, not a copy of them.
+//
+// What it emulates and what it does not:
+//  - _headers: every rule whose path matches adds its headers; a header two rules both set is
+//    joined with ", ", which is what Netlify and Cloudflare Pages do (and why each file must get
+//    Cache-Control from exactly one rule).
+//  - _redirects: the first rule whose path matches wins, and a 200 serves the target in place.
+//    As on Netlify, a rule without "!" does not apply where a file exists, whatever its status,
+//    which is why the site's refusals of its own hosting files are written `404!`.
+//  - A 404 carries the headers _headers gives the address that was asked for, not those of
+//    /404.html: the file matches addresses and has no rule by status. So a missing name under
+//    /_expo/static/ is a 404 marked immutable here; Apache and nginx answer one with no-cache
+//    (public/_headers, "Cache-Control").
+//  - Paths in both files are relative to the site's root, wherever the site is mounted: the
+//    folder is served under `base` the way a host serves a publish folder at a path.
+//  - With `api`, the one thing that is not a file: everything under `<base>/api/` goes to the
+//    recognition server as deploy/nginx.conf's `location ^~ /api/` sends it - chosen by the path
+//    as nginx reads it (nginxPath), a target with a backslash in its path refused with a 400, the
+//    target passed on exactly as the client wrote it, the address the request came from appended
+//    to X-Forwarded-For, and the server's answer as it gave it, with only the header that location
+//    adds - so the website's account and shop are on the site's own origin. Without it,
+//    `<base>/api/config` is a missing file like any other, which is what a static host answers.
+//    e2e/proxy.mjs runs the same requests through this and through nginx with deploy/nginx.conf.
+import { createServer, request as forward } from "node:http";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { extname, join, normalize, sep } from "node:path";
+
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain; charset=utf-8",
+  ".woff2": "font/woff2",
+};
+
+/** _headers as rules: [{ path, headers: [[name, value], ...] }], in file order. */
+export function parseHeaders(text) {
+  const rules = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    if (!/^\s/.test(line)) {
+      rules.push({ path: line.trim(), headers: [] });
+      continue;
+    }
+    const rule = rules[rules.length - 1];
+    if (!rule) throw new Error(`_headers: a header before any path: ${line}`);
+    const colon = line.indexOf(":");
+    if (colon < 0) throw new Error(`_headers: not a header line: ${line}`);
+    rule.headers.push([line.slice(0, colon).trim(), line.slice(colon + 1).trim()]);
+  }
+  return rules;
+}
+
+/** _redirects as rules: [{ from, to, status, force }], in file order. */
+export function parseRedirects(text) {
+  const rules = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const [from, to, code = "301"] = line.split(/\s+/);
+    if (!from || !to) throw new Error(`_redirects: not a rule: ${line}`);
+    const force = code.endsWith("!");
+    rules.push({ from, to, status: Number(force ? code.slice(0, -1) : code), force });
+  }
+  return rules;
+}
+
+/** Netlify path matching: an exact path, or a prefix ending in "*" that matches the rest. */
+export function pathMatches(pattern, path) {
+  if (pattern.endsWith("*")) return path.startsWith(pattern.slice(0, -1));
+  return pattern === path;
+}
+
+/** The headers every rule matching `path` adds, joined as the hosts join them. */
+export function headersFor(rules, path) {
+  const out = new Map();
+  for (const rule of rules) {
+    if (!pathMatches(rule.path, path)) continue;
+    for (const [name, value] of rule.headers) {
+      const key = name.toLowerCase();
+      const prior = out.get(key);
+      out.set(key, prior ? { name: prior.name, value: `${prior.value}, ${value}` } : { name, value });
+    }
+  }
+  return [...out.values()].map(({ name, value }) => [name, value]);
+}
+
+/** A file inside `dir` for a site path, or null. Never outside it. */
+function fileFor(dir, sitePath) {
+  const rel = normalize(sitePath).replace(/^([/\\])+/, "");
+  const full = join(dir, rel);
+  if (full !== dir && !full.startsWith(dir + sep)) return null;
+  if (!existsSync(full)) return null;
+  if (statSync(full).isDirectory()) {
+    const index = join(full, "index.html");
+    return existsSync(index) ? index : null;
+  }
+  return full;
+}
+
+/**
+ * The path nginx chooses a location by, for a request target: the part before `?` (or `#`),
+ * percent-decoded, `//` merged, and `.` and `..` resolved, with `/` the only separator - on Unix
+ * nginx reads a backslash as a character, where a URL parser reads it as a slash. Null for a
+ * target nginx refuses itself (an escape that does not decode, `..` above the root).
+ */
+export function nginxPath(target) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(target.split(/[?#]/, 1)[0] ?? "");
+  } catch {
+    return null;
+  }
+  if (!decoded.startsWith("/")) return null;
+  const parts = decoded.split("/");
+  const kept = [];
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    const last = i === parts.length - 1;
+    if (part === "" && !last) continue;
+    if (part === "." || part === "..") {
+      if (part === ".." && kept.pop() === undefined) return null;
+      if (last) kept.push("");
+      continue;
+    }
+    kept.push(part);
+  }
+  return `/${kept.join("/")}`;
+}
+
+/**
+ * Hands a request to the recognition server at `origin` as deploy/nginx.conf's `location ^~ /api/`
+ * does: a backslash in the path is a 400 that goes nowhere (the location's `if`); otherwise the
+ * same method, the target exactly as written (proxy_pass with no URI), the headers with the
+ * request's own address appended to X-Forwarded-For ($proxy_add_x_forwarded_for) and the body,
+ * and the answer back as it came, every Set-Cookie included, with `extra` (the location's own
+ * add_header lines) on top.
+ */
+function proxy(origin, extra, req, res, done) {
+  const written = req.url ?? "/";
+  if (written.split("?", 1)[0].includes("\\")) {
+    res.writeHead(400, Object.fromEntries(extra)).end("bad request");
+    done(400);
+    return;
+  }
+  const server = new URL(origin);
+  const forwardedFor = [req.headers["x-forwarded-for"], req.socket.remoteAddress].filter(Boolean).join(", ");
+  const headers = { ...req.headers, host: server.host, "x-forwarded-for": forwardedFor };
+  const upstream = forward({ hostname: server.hostname, port: server.port, path: written, method: req.method, headers }, (answer) => {
+    const headers = { ...answer.headers };
+    for (const [name, value] of extra) headers[name.toLowerCase()] = value;
+    res.writeHead(answer.statusCode ?? 502, headers);
+    answer.pipe(res);
+    answer.on("end", () => done(answer.statusCode ?? 502));
+  });
+  upstream.on("error", () => {
+    if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+    res.end("bad gateway");
+    done(502);
+  });
+  req.pipe(upstream);
+}
+
+/**
+ * The request handler for `dir` served at `base`. `log` records every request as
+ * { method, path, status }. `api` ({ origin, headers }) proxies `<base>/api/` there.
+ */
+export function siteHandler({ dir, base = "", log = [], api = null }) {
+  const rules = parseHeaders(readFileSync(join(dir, "_headers"), "utf8"));
+  const redirects = parseRedirects(readFileSync(join(dir, "_redirects"), "utf8"));
+  return (req, res) => {
+    // The api/ location first, chosen as nginx chooses it: by its own reading of the path, which
+    // differs from a URL parser's (a backslash, above all), and ahead of every other rule (^~).
+    const asNginx = nginxPath(req.url ?? "/");
+    if (api && asNginx?.startsWith(`${base}/api/`)) {
+      proxy(api.origin, api.headers ?? [], req, res, (status) => log.push({ method: req.method, path: asNginx, status }));
+      return;
+    }
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(req.url ?? "/", "http://site").pathname);
+    } catch {
+      res.writeHead(400).end();
+      return;
+    }
+    const send = (status, sitePath, file) => {
+      for (const [name, value] of headersFor(rules, sitePath)) res.setHeader(name, value);
+      const body = file ? readFileSync(file) : Buffer.alloc(0);
+      res.setHeader("Content-Type", (file && TYPES[extname(file)]) || "application/octet-stream");
+      res.setHeader("Content-Length", body.length);
+      res.writeHead(status);
+      res.end(req.method === "HEAD" ? undefined : body);
+      log.push({ method: req.method, path: pathname, status });
+    };
+    if (pathname !== base && !pathname.startsWith(`${base}/`)) {
+      // Outside the mount: what the host's root holds, which is not this site.
+      res.writeHead(404, { "Content-Type": "text/plain" }).end("outside the site");
+      log.push({ method: req.method, path: pathname, status: 404 });
+      return;
+    }
+    const sitePath = pathname.slice(base.length) || "/";
+    const notFound = () => send(404, sitePath, fileFor(dir, "/404.html"));
+    const existing = fileFor(dir, sitePath);
+    for (const rule of redirects) {
+      if (!pathMatches(rule.from, sitePath)) continue;
+      if (existing && !rule.force) break;
+      if (rule.status === 200 || rule.status === 404) {
+        const target = fileFor(dir, rule.to);
+        if (!target) return notFound();
+        return send(rule.status, sitePath, target);
+      }
+      res.writeHead(rule.status, { Location: `${base}${rule.to}` }).end();
+      log.push({ method: req.method, path: pathname, status: rule.status });
+      return;
+    }
+    if (!existing) return notFound();
+    return send(200, sitePath, existing);
+  };
+}
+
+/** Listen on a free loopback port; `handle` may be swapped later through the returned setter. */
+export function listen(handle = (req, res) => res.writeHead(503).end()) {
+  let current = handle;
+  const server = createServer((req, res) => current(req, res));
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+      resolve({
+        origin,
+        use: (next) => {
+          current = next;
+        },
+        close: () => new Promise((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+/** Serve `dir` at http://127.0.0.1:<port><base>/. */
+export async function serveSite({ dir, base = "" }) {
+  const log = [];
+  const server = await listen(siteHandler({ dir, base, log }));
+  return { origin: server.origin, url: `${server.origin}${base}/`, log, close: server.close };
+}

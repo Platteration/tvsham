@@ -1,0 +1,16 @@
+# TVsham website: rewrites and refusals for Netlify. Cloudflare Pages reads the 200 rules too, and
+# takes no 404 rules: it does not serve _headers or _redirects in any case, but there .htaccess is
+# served as a file (it holds the site's public headers and the server's origin, nothing secret).
+#
+# The app is one page with four routes. A visit or a reload at a route's address gets the page,
+# which then draws that route; every other missing address gets 404.html with a 404, rather than
+# the app with a 200, so a mistyped address and a missing script both say what they are.
+/settings   /index.html  200
+/library    /index.html  200
+/result     /index.html  200
+
+# The hosting files are not part of the site. `404!` rather than `404`: Netlify does not apply a
+# rule without the `!` to a path where a file exists, and these files are there.
+/_headers    /404.html  404!
+/_redirects  /404.html  404!
+/.htaccess   /404.html  404!

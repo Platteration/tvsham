@@ -112,6 +112,23 @@ function messageFor(err: unknown): string {
 }
 
 /**
+ * What to say when the server could not be reached and the clip could not be
+ * kept for later - always so in a browser, which has nowhere to keep one. The
+ * error itself says nothing a person can use ("Failed to fetch" in Chrome,
+ * "Load failed" in Safari), and nothing else on the screen says the clip is
+ * gone, so this says both, and what to do. A deadline that passed keeps its
+ * own sentence, which names the server address to check.
+ */
+export function unsentMessage(err: unknown, source: CaptureSource): string {
+  const lead = err instanceof Error && err.name === "TimeoutError" ? err.message : "Couldn’t reach the server.";
+  const tail =
+    source === "screen"
+      ? "The video was not kept: choose it again once the server answers."
+      : "The clip could not be kept for later: record it again once the server answers.";
+  return `${lead} ${tail}`;
+}
+
+/**
  * Record a clip, upload it, read the answer, repeat until the server is
  * confident, the user cancels, or the clip limit is reached. The next clip
  * records while the previous one uploads, so no time is lost waiting.
@@ -204,10 +221,11 @@ export async function runIdentification(deps: IdentifyDeps, opts: IdentifyOption
     if (deps.isCancelled()) return;
     const kept =
       networkFailed && unsentClipUri ? await deps.enqueue(unsentClipUri, source, message, opts.hints) : null;
+    const shown = networkFailed && !kept ? unsentMessage(err, source) : message;
     deps.onState((prev) =>
       kept
         ? { ...prev, phase: "queued", error: null, queued: true }
-        : { ...prev, phase: "error", error: message },
+        : { ...prev, phase: "error", error: shown },
     );
   } finally {
     discardPending();

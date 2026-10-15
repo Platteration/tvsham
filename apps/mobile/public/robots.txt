@@ -1,0 +1,4 @@
+# TVsham: a website like this one is one household's front end to its own recognition server,
+# not a page for search engines. Nothing here is worth indexing.
+User-agent: *
+Disallow: /

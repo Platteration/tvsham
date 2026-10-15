@@ -1,4 +1,4 @@
-import { serve } from "@hono/node-server";
+import { serve, type HttpBindings } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -18,7 +18,9 @@ import {
   type HealthResponse,
   type RecognitionResult,
 } from "@tvsham/shared";
+import { accountProblem, createAccount, type Account } from "./account.js";
 import { config } from "./config.js";
+import { clipFormBoundary, clipFormProblem } from "./form.js";
 import { Limiter } from "./limiter.js";
 import { assertDecodable, extractAudio, extractFrames, ffmpegBinary } from "./media.js";
 import { recogniseWithEscalation } from "./recognize.js";
@@ -179,16 +181,104 @@ export function caller(c: Context): string {
   return "ip:unknown";
 }
 /**
+ * What every answer from this server carries. It is an API: nothing it sends
+ * is a page, so no body of it may run script, load anything, be framed, be
+ * sniffed into another type, be embedded by another site or be kept by a cache
+ * on the way. That matters once the app is also a website: a browser reaches
+ * this server from the site's own origin, and the bodies are per session - the
+ * session key comes back in one, and every result says what someone watched.
+ *
+ * - Content-Security-Policy: default-src 'none' loads nothing at all, and
+ *   frame-ancestors 'none' keeps every response out of any frame.
+ * - X-Frame-Options: DENY says the same to browsers that predate frame-ancestors.
+ * - X-Content-Type-Options: nosniff: JSON is never read as HTML or script.
+ * - Referrer-Policy: no-referrer: a session id is in the path of every request.
+ * - Cross-Origin-Resource-Policy: same-origin: another site cannot embed a
+ *   response as an image, script or media. It governs no-cors requests only, so
+ *   the website's own CORS fetches (CORS_ORIGIN) are unaffected - the browser
+ *   suite drives them with this header on.
+ * - Cache-Control: no-store: every body is dynamic and most are per session.
+ *
+ * Strict-Transport-Security is not here: the server speaks plain HTTP behind
+ * the TLS proxy the README asks for, a browser ignores HSTS over HTTP, and the
+ * proxy that terminates TLS is the one that can promise it.
+ *
+ * Registered first, so it is the outermost middleware, and set twice. Before
+ * the rest runs, on the context, so that every response the context builds
+ * carries them from the start: @hono/node-server answers a HEAD by building a
+ * new Response from the GET one's original headers, and a header set on the
+ * finished response afterwards was lost there (measured: `curl -I` showed none
+ * of them). And again once everything else has answered, for a Response a
+ * handler builds itself (`return new Response(...)` from a route, a not-found
+ * or an error handler): Hono hands that one on as it is, without the headers
+ * set on the context (measured). The website's account (account.ts) answers
+ * that way - every answer of the kit is a Response it builds - so there this
+ * second pass is what sends them, and the server's no-store and policy replace
+ * the kit's own. Every other answer goes through the context - the routes, the
+ * CORS preflight, the Origin and token gates, the body limits, the default
+ * not-found and error answers; index.test.ts drives the second pass with
+ * handlers that build their own, and account.test.ts with the kit.
+ */
+export const API_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Cache-Control": "no-store",
+};
+export async function apiHeaders(c: Context, next: Next): Promise<void> {
+  for (const [name, value] of Object.entries(API_HEADERS)) c.header(name, value);
+  await next();
+  for (const [name, value] of Object.entries(API_HEADERS)) c.res.headers.set(name, value);
+}
+app.use("*", apiHeaders);
+
+/**
  * The session id is a capability: it is the only thing the session routes ask
  * for, and it is in the path of every request. Hono's logger prints the whole
  * path, so an hour of stdout — `docker logs`, journald, a pasted crash dump —
  * is an hour of live sessions to read, destroy or push a clip into.
+ *
+ * It prints the query string too, and the one route here that takes one is the
+ * website's sign-in: Google sends the browser back to it with a one-time code
+ * and the sign-in's state in the query, and the start of a sign-in carries the
+ * page to come back to. None of that belongs in a log, so no query is printed.
  */
 const SESSION_ID_IN_PATH = /\/sessions\/[^/\s?]+/g;
+const QUERY = /\?\S*/g;
+export function loggedPath(message: string): string {
+  return message.replace(SESSION_ID_IN_PATH, "/sessions/<id>").replace(QUERY, "?<query>");
+}
 app.use(
   "*",
-  logger((message, ...rest) => console.log(message.replace(SESSION_ID_IN_PATH, "/sessions/<id>"), ...rest)),
+  logger((message, ...rest) => console.log(loggedPath(message), ...rest)),
 );
+
+/**
+ * The path a request is routed by is the path it wrote. A reverse proxy that hands this server
+ * only some of its paths - the website's nginx sends it `/api/` and nothing else
+ * (deploy/nginx.conf) - decides on the request target as nginx reads it and passes it on as the
+ * client wrote it; the URL parser here then rewrites it before any route sees it. A backslash
+ * is a character to nginx and a slash to the parser, and the parser also resolves `..` (`%2e%2e`
+ * too) and drops whatever follows a `#`. So `/api/..\..\health`, which nginx files under `/api/`,
+ * arrived here as `/health`, and `/api/..\..\sessions` opened sessions behind the account's mount
+ * with whatever X-Forwarded-For the caller wrote (measured through nginx 1.24). No browser and no
+ * phone app sends a target the parser would rewrite, so one that does is refused before anything
+ * routes it, whatever proxy is in front. The query is not compared: the parser leaves it as
+ * written. Read from the socket's request, so this applies over the wire; app.request() hands
+ * the app a URL already parsed and has nothing else to compare it with.
+ */
+export async function targetAsWritten(c: Context, next: Next): Promise<Response | void> {
+  const written = (c.env as Partial<HttpBindings> | undefined)?.incoming?.url;
+  if (written?.startsWith("/")) {
+    const query = written.indexOf("?");
+    const path = query === -1 ? written : written.slice(0, query);
+    if (path !== new URL(c.req.url).pathname) return c.json({ error: "request target not as written" }, 400);
+  }
+  return next();
+}
+app.use("*", targetAsWritten);
 // The mobile app is not a browser and needs no CORS. Sending permissive headers
 // by default would let any web page the user visits spend the operator's budget
 // and read back what the household watched, so this is opt-in.
@@ -208,6 +298,32 @@ app.use("*", async (c, next) => {
   const origin = c.req.header("origin");
   if (origin && origin !== config.corsOrigin) return c.json({ error: "cross-origin request refused" }, 403);
   return next();
+});
+
+/**
+ * The website's account and shop (account.ts): the shared kit, answering every
+ * path below APP_URL's path and `api/` - `/api/` for a site at the root of its
+ * origin - whatever it then answers there, so no route behind it is reachable
+ * by that path. Here, behind the Origin gate above, which the page passes
+ * because CORS_ORIGIN names the site's origin (main() refuses to start when
+ * sign-in is on and it does not), and ahead of the bearer-token gate below,
+ * which the kit's requests cannot pass: Google sends the browser back to the
+ * sign-in by a navigation, Stripe posts its webhook from its own servers, and
+ * the page keeps the token in memory only. They carry their own
+ * authentication instead - a signed sign-in cookie and state, a session
+ * cookie and an Origin check on every write, Stripe's signature - and spend
+ * nothing of the Claude budget the token guards. Off until its variables are
+ * set: then `GET /api/config` says nothing is on, and the rest is a 404.
+ */
+const defaultAccount = createAccount({ env: process.env });
+let account: Account = defaultAccount;
+/** Swaps in an account built with fakes (tests); null puts back the one built from the environment. */
+export function setAccountForTests(next: Account | null): void {
+  account = next ?? defaultAccount;
+}
+app.use("*", async (c, next) => {
+  if (!account.owns(c.req.path)) return next();
+  return account.handle(c.req.raw);
 });
 
 /**
@@ -275,7 +391,8 @@ function countWrongToken(bucket: string, now = Date.now()): number {
   return WRONG_TOKENS_ALLOWED - seen.count;
 }
 
-// Optional bearer-token gate for everything except the health check.
+// Optional bearer-token gate for everything except the health check (and the
+// account's routes, answered above with authentication of their own).
 app.use("*", async (c, next) => {
   if (!config.appToken || c.req.path === "/health") return next();
   if (tokenMatches(c.req.header("authorization") ?? "", config.appToken)) return next();
@@ -424,7 +541,9 @@ function releaseUploadSlot(billTo: string): void {
  * caller has quota left, and whether there is room to hold another body in
  * memory. Registered ahead of the body-limit middleware, which is what makes
  * "before the body is read" true for an upload that arrives without a
- * Content-Length as well as one that carries it.
+ * Content-Length as well as one that carries it. What the body says it is - its
+ * Content-Type - is checked in receiveClip instead, after the size cap and
+ * before anything parses it, so that an oversized upload is still a 413.
  */
 async function admitClip(c: Context<AppEnv, "/sessions/:id/clips">, next: Next) {
   // Read now, while the socket is still open: the work below runs after a queue
@@ -484,6 +603,15 @@ app.post("/sessions/:id/clips", async (c) => {
 
 /** The rest of the upload: everything from here on holds the clip in memory. */
 async function receiveClip(c: Context, s: Session, billTo: string, headerKey: string | undefined) {
+  // The one encoding this route takes, and a form no bigger in structure than an
+  // upload is, checked before the parser sees a byte (form.ts says why: parsed
+  // whole, a body of nothing but tiny fields held the event loop for seconds).
+  // The scan reads the body Hono then hands parseBody, which it keeps, so
+  // nothing is read or held twice.
+  const boundary = clipFormBoundary(c.req.header("content-type"));
+  if (!boundary) return c.json({ error: "expected multipart/form-data" }, 415);
+  const problem = clipFormProblem(new Uint8Array(await c.req.arrayBuffer()), boundary);
+  if (problem) return c.json({ error: problem }, 400);
   const form = await c.req.parseBody();
   const clip = form["clip"];
   if (!(clip instanceof File)) return c.json({ error: "missing `clip` file field" }, 400);
@@ -743,6 +871,12 @@ async function main(): Promise<void> {
     console.error(`[server] ${corsProblem}`);
     process.exit(1);
   }
+  const signInProblem = accountProblem(account, config.corsOrigin);
+  if (signInProblem) {
+    // Refused for the same reason: a sign-in whose every write is refused.
+    console.error(`[server] ${signInProblem}`);
+    process.exit(1);
+  }
   const sttProblem = sttWarning();
   if (sttProblem) {
     // Fail loudly rather than transcribing to somewhere the operator did not choose.
@@ -756,6 +890,12 @@ async function main(): Promise<void> {
     sweepSessions();
     void sweepTmpDir(config.sessionTtlMs);
   }, 60_000).unref();
+  // The account's records expire by date; the file store keeps them until swept. The first
+  // sweep also creates KIT_DATA_DIR, so a directory this process cannot write stops it here.
+  await account.sweep();
+  setInterval(() => {
+    account.sweep().catch((err) => console.warn("[account] sweep failed", err));
+  }, 3_600_000).unref();
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.warn("[server] ANTHROPIC_API_KEY is not set; recognition requests will fail until it is.");
   }
@@ -768,6 +908,9 @@ async function main(): Promise<void> {
   }
   console.log(`[server] ffmpeg: ${(await ffmpegBinary()) ?? "NOT FOUND"}`);
   console.log(`[server] model: ${config.model}, stt: ${sttProvider().name}`);
+  console.log(
+    `[server] website account (${account.prefix}): sign-in ${account.features.signIn ? "on" : "off"}, shop ${account.features.shop ? "on" : "off"}`,
+  );
   serve(
     {
       fetch: app.fetch,

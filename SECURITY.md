@@ -6,7 +6,11 @@ Please report security issues privately rather than opening a public issue.
 
 Use GitHub's private vulnerability reporting on this repository:
 **Security → Report a vulnerability**. That opens a private advisory visible
-only to the maintainers.
+only to the maintainers. If that button is not offered (private reporting is
+switched off on this repository today), open an issue that says you have a
+report, with no details in it, and a private channel will be arranged.
+`/.well-known/security.txt` on the website points at the issues page for that
+reason.
 
 Include what you need to make the problem reproducible: the affected version
 or commit, the steps or input that trigger it, and what you observed. A proof
@@ -20,6 +24,20 @@ guarantee. Reports are read and acted on in order of severity.
 In scope: the code in this repository, including anything it does with input
 that comes from outside it (files, share links, imported data, network
 responses, user-supplied text rendered into a page).
+
+The app also runs as a website (README, "Run it as a website"). There, in scope as
+well: a way to run script or load a resource the Content-Security-Policy should
+forbid; hosting settings in `apps/mobile/public/_headers`, `_redirects`, `.htaccess`
+or `apps/mobile/deploy/nginx.conf` that are wrong or incomplete; and anything that
+lets the site send a clip, the access token or a result anywhere but the server it
+was built for. Where the server's website account and shop are configured (README,
+"The website's account and shop"): signing in as someone else, keeping a session past
+sign-out or account deletion, unlocking an accent pack Stripe's signed webhook did not
+grant, or reaching `/api/` with a request the account's own checks should refuse. The
+shared kit those rest on (`apps/server/kit/`) is copied byte for byte from one canonical
+copy into several of the owner's repositories, so a finding in it is fixed there. An accent
+drawn by editing the page is a cosmetic, not a finding. A deployed site's
+`/.well-known/security.txt` points to this page; its `Expires` date is renewed every year.
 
 Out of scope: vulnerabilities in third-party dependencies that are already
 public and have an upstream fix, findings that require an attacker to already

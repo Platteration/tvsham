@@ -24,6 +24,12 @@ export const KEYS = {
    * where it is.
    */
   token: "tvsham.token.v1",
+  /**
+   * The website only, in sessionStorage: the accent pack this tab sent to Stripe's Checkout, so
+   * the thank-you on the way back can name it. Read once and removed; it unlocks nothing, which
+   * only the server's GET api/me does (account-model.ts).
+   */
+  checkout: "tvsham.checkout.v1",
 } as const;
 
 /** Decorative motion: follow the phone's accessibility setting, or pin it. */
@@ -218,6 +224,18 @@ export function shouldReduceMotion(setting: ReduceMotion, system: boolean): bool
  */
 export function hydrateSettings(saved: unknown, token: string | undefined, prev: Settings): Settings {
   return cleanSettings({ ...(saved as object | null), token }, prev);
+}
+
+/**
+ * The settings with the server address the build fixed, when it fixed one.
+ * The website is built for one recognition server (TVSHAM_SERVER_URL), and its
+ * Content-Security-Policy lets the page reach that origin and no other, so an
+ * address from storage - an earlier build's, or one written by anything else
+ * on the origin - or typed into Settings would be a server the browser refuses.
+ * `fixed` is null where the user chooses the server: on a phone.
+ */
+export function pinServer(settings: Settings, fixed: string | null): Settings {
+  return fixed === null ? settings : { ...settings, serverUrl: fixed };
 }
 
 /**

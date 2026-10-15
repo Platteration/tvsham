@@ -8,8 +8,11 @@ import { promisify } from "node:util";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { CreateSessionResponse } from "@tvsham/shared";
 import { config } from "./config.js";
+import { Hono } from "hono";
 import {
+  API_HEADERS,
   addressBucket,
+  apiHeaders,
   app,
   caller,
   cleanClipKey,
@@ -89,6 +92,65 @@ describe("http", () => {
     form.set("clip", new Blob([new Uint8Array(16)]), "clip.mp4");
     const res = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", headers: auth, body: form });
     assert.equal(res.status, 400);
+  });
+
+  it("takes a clip as multipart/form-data and refuses every other encoding unparsed", async () => {
+    // Parsed whole, 80 MB of urlencoded pairs held the event loop for 12 s and
+    // took a gigabyte, and spent nothing a caller is limited by (form.ts).
+    const { sessionId, auth } = await newSession();
+    const send = (type: string | undefined, body: string | Blob) =>
+      app.request(`/sessions/${sessionId}/clips`, {
+        method: "POST",
+        headers: { ...auth, ...(type ? { "content-type": type } : {}) },
+        body,
+      });
+    for (const [type, body] of [
+      ["application/x-www-form-urlencoded", "clip=x&clipKey=k&" + "a=&".repeat(10_000)],
+      ["text/plain;charset=UTF-8", "clip"],
+      ["multipart/form-data; charset=utf-8; boundary=x", "--x--\r\n"],
+      [undefined, new Blob([new Uint8Array(2048)])],
+    ] as const) {
+      const res = await send(type, body);
+      assert.equal(res.status, 415, `${type}: ${res.status}`);
+      assert.deepEqual(await res.json(), { error: "expected multipart/form-data" });
+    }
+    await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: auth });
+  });
+
+  it("refuses a clip form bigger in structure than an upload, before the parser builds it", async () => {
+    // A clip and its key are two fields with a few hundred bytes of headers. A
+    // body of thousands of empty fields, or of one field with a megabyte of
+    // header lines, is work for the parser and nothing else, and is answered
+    // before it is parsed.
+    const { sessionId, auth } = await newSession();
+    const clip = () => new Blob([new Uint8Array(4096).fill(7)], { type: "video/mp4" });
+    const many = new FormData();
+    many.set("clip", clip(), "clip.mp4");
+    for (let i = 0; i < 2000; i++) many.set(`f${i}`, "");
+    const crowded = await app.request(`/sessions/${sessionId}/clips`, { method: "POST", headers: auth, body: many });
+    assert.equal(crowded.status, 400);
+    assert.deepEqual(await crowded.json(), { error: "more than 8 form fields" });
+
+    const b = "B0undary";
+    const runOn = await app.request(`/sessions/${sessionId}/clips`, {
+      method: "POST",
+      headers: { ...auth, "content-type": `multipart/form-data; boundary=${b}` },
+      body:
+        `--${b}\r\nContent-Disposition: form-data; name="clip"; filename="clip.mp4"\r\n` +
+        "X: y\r\n".repeat(200_000) +
+        `\r\n${"v".repeat(2048)}\r\n--${b}--\r\n`,
+    });
+    assert.equal(runOn.status, 400);
+    assert.deepEqual(await runOn.json(), { error: "a form field's headers run on, or never end" });
+
+    // Neither was counted as a clip of the session.
+    const state = (await (await app.request(`/sessions/${sessionId}`, { headers: auth })).json()) as {
+      secondsAnalysed: number;
+      analysing: boolean;
+    };
+    assert.equal(state.secondsAnalysed, 0);
+    assert.equal(state.analysing, false);
+    await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: auth });
   });
 
   it("does not analyse a clip twice when the same clipKey is re-sent", async () => {
@@ -238,6 +300,84 @@ describe("http", () => {
     } finally {
       (config as { corsOrigin: string | undefined }).corsOrigin = original;
     }
+  });
+
+  it("sends the API's own headers on every answer, refusals and errors included", async () => {
+    // A browser reaches this server from the website's origin, and its bodies are per
+    // session: none of them may be framed, sniffed, embedded by another site or cached.
+    // Each request below ends in a different place - a route, the not-found answer, the
+    // Origin gate, the content-type check, the body limit, the token gate - because a
+    // header set inside one handler is a header every other one forgets.
+    assert.deepEqual(API_HEADERS, {
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Cache-Control": "no-store",
+    });
+    const json = { "content-type": "application/json" };
+    const answers: Array<[string, Response, number]> = [
+      ["health", await app.request("/health"), 200],
+      ["a route that does not exist", await app.request("/no-such-route"), 404],
+      ["an unknown session", await app.request("/sessions/nope", { headers: { "x-session-key": "nope" } }), 404],
+      [
+        "another origin",
+        await app.request("/sessions", { method: "POST", headers: { ...json, origin: "https://evil.example" }, body: "{}" }),
+        403,
+      ],
+      ["a form encoding", await app.request("/sessions", { method: "POST", headers: { "content-type": "text/plain" }, body: "x" }), 415],
+      ["an oversized body", await app.request("/sessions", { method: "POST", headers: json, body: "x".repeat(8 * 1024) }), 413],
+    ];
+    const created = await app.request("/sessions", { method: "POST", headers: json, body: '{"source":"screen"}' });
+    answers.push(["a new session", created, 201]);
+    const { sessionId, sessionKey } = (await created.json()) as CreateSessionResponse;
+    answers.push(["reading it", await app.request(`/sessions/${sessionId}`, { headers: { "x-session-key": sessionKey } }), 200]);
+    answers.push([
+      "ending it",
+      await app.request(`/sessions/${sessionId}`, { method: "DELETE", headers: { "x-session-key": sessionKey } }),
+      204,
+    ]);
+    const original = config.appToken;
+    (config as { appToken?: string }).appToken = "a-real-token-of-sufficient-length";
+    try {
+      answers.push(["a wrong token", await app.request("/sessions", { method: "POST", headers: { authorization: "Bearer no" } }), 401]);
+    } finally {
+      (config as { appToken?: string }).appToken = original;
+    }
+    for (const [what, res, status] of answers) {
+      assert.equal(res.status, status, `${what} reaches the branch it is here for`);
+      for (const [name, value] of Object.entries(API_HEADERS)) {
+        assert.equal(res.headers.get(name), value, `${what}: ${name}`);
+      }
+    }
+    // And the README says what they are, in the words the server sends.
+    const readme = await fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
+    for (const [name, value] of Object.entries(API_HEADERS)) {
+      assert.ok(readme.includes(`\`${name}: ${value}\``), `README.md quotes ${name}: ${value}`);
+    }
+  });
+
+  it("sends them on a Response a handler builds itself, which Hono passes on without the context's", async () => {
+    // The website's account answers that way (account.test.ts checks its answers); the second
+    // pass in apiHeaders is what covers it. Without it, each of these went out with none of the headers.
+    const probe = new Hono();
+    probe.use("*", apiHeaders);
+    probe.get("/route", () => new Response("built here"));
+    probe.get("/throws", () => {
+      throw new Error("boom");
+    });
+    probe.notFound(() => new Response("not here", { status: 404 }));
+    probe.onError(() => new Response("failed", { status: 500 }));
+    for (const [path, status] of [["/route", 200], ["/nowhere", 404], ["/throws", 500]] as const) {
+      const res = await probe.request(path);
+      assert.equal(res.status, status, path);
+      for (const [name, value] of Object.entries(API_HEADERS)) assert.equal(res.headers.get(name), value, `${path}: ${name}`);
+    }
+    // And the server itself is wrapped in this same middleware, first.
+    const source = await fs.readFile(new URL("./index.ts", import.meta.url), "utf8");
+    assert.match(source, /^app\.use\("\*", apiHeaders\);$/m);
+    assert.equal(source.indexOf("app.use("), source.indexOf('app.use("*", apiHeaders);'), "registered before every other middleware");
   });
 
   it("404s for unknown sessions", async () => {

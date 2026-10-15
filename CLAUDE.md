@@ -12,12 +12,25 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
   (`identify-run.ts` is the record → upload → repeat loop, with its IO injected so it
   can be tested without a renderer; `useIdentify.ts` is the React wrapper around it; `store.ts` holds settings and the
   saved library; `api.ts` talks to the server; `theme.tsx` owns the light/dark palettes).
-  Path alias `@/` → `src/`.
-- `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `media.ts` ffmpeg, `recognize.ts`
-  Claude, `resolve.ts` Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
+  Path alias `@/` → `src/`. It is also the website: `public/` (the page template, safety
+  net, 404 page and host configs the export copies into the site), `deploy/nginx.conf`,
+  `scripts/build-web.mjs`, and `e2e/` (the browser suite). See Website below. The website's
+  account and accent shop: `account-model.ts` (what api/ says, read field by field, and the
+  words), `account-client.web.ts` (the one module that asks the site's api/; Metro bundles it
+  into the web build alone) and its inert native twin `account-client.ts`, `account.ts` (the
+  state the screens draw from) and `account-ui.tsx` (the cards and the notice).
+- `apps/server` – Node 22 ESM, Hono. `index.ts` routes, `form.ts` what a clip upload's
+  body may be before it is parsed, `media.ts` ffmpeg, `recognize.ts` Claude, `resolve.ts`
+  Wikipedia/YouTube/TikTok, `tmdb.ts` optional where-to-watch and
   cast, `stt.ts` optional speech-to-text, `sessions.ts` in-memory session store,
   `limiter.ts` concurrency, `usage.ts` the daily cap, `eval/` an offline accuracy
-  harness (`npm run eval --workspace apps/server`).
+  harness (`npm run eval --workspace apps/server`). `account.ts` mounts the shared kit for
+  the website's account and shop, `catalogue.ts` is what it sells, and `src/testing/` holds
+  the fake Google and Stripe the tests hand it (left out of the build by tsconfig.json).
+  `apps/server/kit/` is the shared kit (sign in with Google, Stripe Checkout and its
+  webhook), byte for byte the canonical copy: the charter's `server/kit/`, kept inside the
+  server's workspace because that is what the image copies and what the server's lint,
+  type check and tests walk. Never edit it here; a change goes to the canonical copy.
 - `packages/shared` – types and tuning constants used by both sides.
 
 ## Commands
@@ -26,9 +39,11 @@ content with web search, and the server returns verified Wikipedia / YouTube lin
 npm install
 npm run lint                       # eslint in every workspace
 npm run typecheck                  # every workspace
-npm test                           # node:test in both workspaces; no network or API key
+npm test                           # node:test in both workspaces (the server's runs kit/selftest.mjs first); no network or API key
 npm run test:conventions           # the shared repository conventions (CONVENTIONS.md)
 npm run check                      # lint, typecheck, test, test:conventions: the gate before a push
+npm run test:e2e                   # the api/ proxy in nginx (e2e/proxy.mjs), then the website in Chromium: builds, serves and drives it
+TVSHAM_SERVER_URL=https://… npm run build:web --workspace apps/mobile   # the website, in apps/mobile/dist
 npm run server                     # tsx watch, port 8787
 npm run mobile                     # expo start
 cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
@@ -37,15 +52,17 @@ cd apps/mobile && node scripts/make-icons.mjs   # regenerate assets/*.png
 ## Project conventions
 
 - Keep server responses in the shapes from `packages/shared`; the app only renders them.
-- Network access in the server goes through `http.ts` `getJson` so tests can stub it.
+- Network access in the server goes through `http.ts` (`getJson`, `postForm`, and `outbound`,
+  the kit's way to Google and Stripe) so tests can stub it.
 - Claude is called via `@anthropic-ai/sdk` only (`recognize.ts`). Two calls per clip:
   vision + web search reasoning, then a `messages.parse` structured extraction.
 - Uploaded clips live under `apps/server/tmp/<session>-<n>` and are deleted after analysis.
-- No test can hit the real API. Verify changes with typecheck, the unit tests, and
-  `npx expo export` for the app bundle.
+- No test can hit the real API. Verify changes with typecheck, the unit tests,
+  `npx expo export` for the app bundle, and `npm run test:e2e` for the website (which
+  stands in for Claude and the outside world through `setClientForTests`/`setFetchForTests`).
 - App logic worth testing goes in a React-Native-free module (`palette.ts`,
   `settings.ts`, `format.ts`, `queue-policy.ts`, `identify-run.ts`, `shapes.ts`,
-  `deadline.ts`); the `.tsx` files
+  `deadline.ts`, `clip-upload.ts`, `account-model.ts`, `account.ts`); the `.tsx` files
   then hold only rendering. That is what makes `npm test` possible in `apps/mobile` at all.
 - Colour changes must keep `palette.test.ts` green: it checks every text pairing in
   both schemes and all four accents against WCAG AA.
@@ -107,6 +124,16 @@ will pass typecheck and tests but reopen the hole.
   180 s), and a body cut off mid-upload is not an HTTP status: the app reads it as a
   transport failure, queues the clip and retries it into the same wall for ever. 80 MB
   is a whole screen recording, and 80 MB in 120 s is a sustained 5.3 Mbit/s uplink.
+- **A clip leaves a phone through React Native's XMLHttpRequest, not `fetch`.** SDK 57
+  makes `expo/fetch` the global `fetch`, and it serialises a FormData itself, taking
+  strings and Blobs only: the `{ uri, name, type }` part that names the recorded file
+  throws "Unsupported FormDataPart implementation" before anything is sent, which the run
+  reads as a network failure and queues, for ever. React Native's own XMLHttpRequest hands
+  the part to RCTNetworking (iOS) or OkHttp (Android), which stream the file from disk.
+  `postClipForm` in `clip-upload.ts` takes that path on a phone and the browser's `fetch`
+  on the web (where the part is the picked File); `clip-upload.test.ts` runs Expo's own
+  serialiser on the part `uploadClip` builds, so it fails once Expo learns to send one.
+  Every other call is JSON and goes through `fetch`.
 - **Cap the frames carried in `s.evidence`.** Each clip re-sends the whole session, so
   without a ceiling the image tokens grow with the square of the clip count.
 - **Untrusted text (transcripts, hints, model write-ups) is fenced with a per-request
@@ -123,6 +150,39 @@ will pass typecheck and tests but reopen the hole.
   gate compares the Origin with that string, so a wildcard is a preflight answered 204
   and the request behind it answered 403, and the alternative — treating it as "any
   origin" — is the hole the gate exists to close.
+- **The website's account is the kit, mounted between the Origin gate and the bearer
+  gate.** `account.ts` hands every path below `APP_URL`'s path and `api/` to
+  `apps/server/kit` (createApp's `handle`), from a middleware registered after the Origin
+  gate, so a foreign Origin is refused there as everywhere, and before the `APP_TOKEN`
+  gate, which none of its callers could pass: Google sends the browser back by a
+  navigation, Stripe posts from its own servers, and the page keeps the token in memory
+  only. The kit has its own authentication (a signed sign-in cookie and state, a session
+  cookie and an Origin check on every write, Stripe's signature) and spends no Claude
+  budget. The page's writes carry the site's Origin, so with sign-in on `CORS_ORIGIN` must
+  be `APP_URL`'s origin: `accountProblem` stops the server otherwise, as `CORS_ORIGIN=*`
+  does. The session is a cookie of the website's origin, so the site's reverse proxy puts
+  `/api/` there (`deploy/nginx.conf`, `location ^~ /api/`, under the next invariant); the
+  server serves no site.
+  Records live in `KIT_DATA_DIR`, the kit's file store: one process per directory, and the
+  image's on the compose volume `account`. The request log prints no query string, since
+  the sign-in's callback carries Google's one-time code. The daily cap is untouched: clips
+  are still billed to `caller()`. The kit is never edited here (`kit_requests` go to the
+  canonical copy), and `npm test` runs its self-test before the server's tests.
+- **A request target is routed as written, by the proxy and by the server.** The site's
+  nginx hands the server `/api/` alone, but the server answers `/health` and `/sessions`
+  too, and the two read a target differently: nginx takes a backslash for an ordinary
+  character and passes the target on as written (proxy_pass with no URI), the server's URL
+  parser takes it for a slash. `/api/..\..\sessions` opened sessions through nginx 1.24,
+  and since the location passed on the client's own `X-Forwarded-For`, under `TRUST_PROXY`
+  the caller chose the bucket the daily cap, the session ceilings and the token's guess
+  limit counted against. So the location refuses a backslash in the path and appends the
+  address it saw (`$proxy_add_x_forwarded_for`), and `targetAsWritten` in `index.ts`
+  refuses, ahead of every route and the account's mount, any target whose path the parser
+  would rewrite (a backslash, a dot segment escaped or not, a `#`), whatever proxy is in
+  front; it reads the raw target off the socket, so `request-target.test.ts` drives it over
+  one. `e2e/proxy.mjs` sends the same raw requests through `deploy/nginx.conf` in a real
+  nginx and through `e2e/serve.mjs`, which emulates that location (its own reading of the
+  path, the target passed on verbatim, the address appended), each in front of a recorder.
 - **The listener binds loopback unless `HOST` says otherwise.** SEC-1 was fixed by
   binding the *published Docker port*; the listener itself still took every interface,
   so `npm run server` on a laptop put an unauthenticated server on every network the
@@ -138,6 +198,19 @@ will pass typecheck and tests but reopen the hole.
   for the upload whatever it answers. One caller gets `MAX_UPLOADS_PER_CALLER` of those
   slots, because a body is only released when all of it has arrived and nothing obliges
   a client to send it.
+- **Bound the form before it is parsed, not only its size.** The parser behind
+  `parseBody` spends a native search on a file's bytes but JavaScript objects on every
+  part, header line and urlencoded pair, in one synchronous run: within the 80 MB cap,
+  a body of nothing but tiny fields held the event loop for 7 to 15 s, and was answered
+  "missing `clip`" before it spent a unit of the daily cap or a clip of the session, so
+  it could be repeated for ever. `receiveClip` therefore takes `multipart/form-data`
+  alone (415 otherwise), with the boundary read only where it has one reading
+  (`clipFormBoundary`), and `clipFormProblem` counts every `CRLF--boundary` in the body
+  (a superset of the parts the parser can make; at most `MAX_FORM_PARTS`) and requires
+  a blank line within `MAX_PART_HEADER_BYTES` of each (the parser reads a part's headers
+  no further than that). `form.test.ts` holds the bound against Node's real parser with
+  a fuzz that reaches it from both sides; a scan that skips a delimiter inside a header
+  block passes every hand-written case and fails that one.
 - **ffmpeg chooses the demuxer from the content, not from the name.** `inputGuards()`
   carries `-format_whitelist` as well as `-protocol_whitelist`: an upload saved as
   clip.mp4 that begins `ffconcat version 1.0` is opened by the concat demuxer, which
@@ -184,7 +257,9 @@ Every record the app keeps on the device is named once, in `KEYS` in
 `apps/mobile/src/settings.ts`: `tvsham.settings.v1` (preferences and the server URL),
 `tvsham.library.v1` and `tvsham.history.v1` (the user's own lists), `tvsham.device.v1`
 (the per-install id), `tvsham.queue.v1` (clips waiting for the server), all in
-AsyncStorage, and `tvsham.token.v1` in expo-secure-store.
+AsyncStorage, `tvsham.token.v1` in expo-secure-store, and on the website alone
+`tvsham.checkout.v1` in sessionStorage (the accent pack sent to Checkout, read once on the way
+back to name it in the thank-you; it unlocks nothing).
 `settings-contract.test.ts` pins the table, the row list, the enum tables and
 `PREFERENCE_FIELDS` as literals, and greps the screens for a key string, a direct
 `expo-haptics` import or a bare `Alert.alert`: a renamed key orphans every user's record
@@ -208,6 +283,96 @@ elsewhere, because react-native-web's `Alert` is an empty stub), and the rule fo
 to ask is that the action destroys what the app cannot restore from inside itself:
 removing a saved item and clearing the recent list. The version in the "How it works"
 card is `Constants.expoConfig?.version` from `expo-constants`.
+
+## Website
+
+The app is also a website (README, "Run it as a website"). `scripts/build-web.mjs` runs
+`expo export --platform web --clear` with `TVSHAM_SERVER_URL` (required) and `WEB_BASE_URL`
+(optional), which `app.config.js` turns into `extra.serverUrl` and `experiments.baseUrl`
+(app.json comes through untouched when neither is set), then fills `TVSHAM_SERVER_ORIGIN`
+and `%BASE_URL%` into the `STAMPED` files (`404.html`, `_headers`, `.htaccess`), writes the
+policy into the built `index.html` as a `<meta>` from `_headers` and moves its `site.css`
+and `guard.js` under the base path (`finishPage`), and refuses to finish with either token
+left. `public/index.html` carries neither the policy nor a token: `expo start --web` serves
+it as it is, and with them the page asked for `/%BASE_URL%/guard.js` and refused the
+development server's own reload socket, error overlay and address, so it never started.
+`TVSHAM_SERVER_URL` must be `https:` unless it is loopback (`siteServerUrlFrom`): the policy
+upgrades the page's requests, and an https page may not call an http server. `--clear` is
+load-bearing: Metro's transform cache does not key on the app config, and without it a second
+build kept the first one's server address under a policy that named another. The token is not a valid
+CSP source, so a site published without the build has, in effect, `connect-src 'none'`.
+
+- **One policy, five places**: `public/_headers`, `public/.htaccess`, `deploy/nginx.conf`,
+  the `<meta>` the build writes into the built `index.html` from `_headers` (less
+  `frame-ancestors`) and the README's table.
+  `src/website.test.ts` holds them equal and pins every source; `e2e/web.mjs` loads the
+  build under `_headers` against a real server and fails on any violation, console error,
+  page error or request leaving the site. Each value was measured there by removing it:
+  `media-src blob:` (the picker reads a video's length through a `<video>`), each `img-src`
+  host (the result's pictures), `'self'` (the favicon and the header's back icon) and the
+  empty-string hash all fail the suite when dropped. A picture host added to `resolve.ts`
+  or `tmdb.ts` goes into all five. `connect-src` is `'self'` (the site's own `api/`: the
+  account and the shop, which the server answers through the site's proxy) and the
+  recognition server's origin, nothing else; Google and Stripe are top-level navigations,
+  which CSP does not govern, so nothing else changed for them.
+- **No `'unsafe-inline'`.** react-native-web inserts an empty `<style>` and fills it with
+  `insertRule`, which CSP does not govern, so the hash of the empty string is all
+  `style-src` needs beyond `'self'`. Nothing inline goes into `index.html` or `404.html`:
+  `site.css` and `guard.js` are files for that reason, and Trusted Types are enforced.
+- **On the web the server is the built one** (`pinServer` in `store.ts`, on hydrate and on
+  every update; Settings shows it read-only): a stored address from an earlier build is one
+  the policy refuses. **The token is memory only** (`TOKEN_IS_SAVED`): expo-secure-store has
+  no web implementation and `localStorage` is readable by every script on the origin.
+- **The account and the shop are the site's own `api/`.** `account.ts` asks `api/config`
+  once at start (5 s at most) and, when sign-in is on, `api/me`; a 404, an error or a body
+  that is not the kit's is no account, and nothing more is asked, drawn or stored: that visit
+  has no shop, so the record's `unlockedAccents` decides, every pack by default. On a host
+  with nothing at `api/` that one 404 is a console line Chromium logs (the browser suite
+  counts it by its address). An accent the shop sells is drawn and chosen only once `api/me`
+  says it is owned, and Midnight until then (`drawnAccent`, `canUseAccent`); the record's
+  `unlockedAccents` is not read for it, and not written. While `api/` is being asked,
+  Midnight alone. The kit's `?signin=failed` and `?purchase=…` arrive at the first screen and
+  are taken out by the router (`useLandingCleared`): Expo Router writes the address from its
+  own state, so `history.replaceState` alone was written over when it mounted and on every
+  navigation back (measured). The browser suite signs in, buys, posts the signed webhook,
+  signs out and deletes; it answers Google's step by handing the browser the kit's 302 as a
+  `Refresh`, because Playwright routes no request a redirect makes.
+- **What a browser cannot do says so**: camera recording (expo-camera's web `recordAsync`
+  answers an empty file) is `WebCameraNotice`; the offline queue (expo-file-system has no
+  web implementation) is off (`CAN_QUEUE`), so a failed upload is an error card that says
+  the server was not reached and the video has to be chosen again (`unsentMessage`, not the
+  browser's "Failed to fetch"; the browser suite stages it); a picked
+  File is held in `web-clips.ts` for its upload, because fetching its `blob:` address back
+  would need `blob:` in `connect-src`, and is released when the run ends.
+- Every route in `app/` is served as the one page by every host (`_redirects`,
+  `.htaccess`, `nginx.conf`, and a cache rule in `_headers`); the website test reads `app/`
+  and fails when one is missing. Each path gets `Cache-Control` from one `_headers` rule,
+  because Netlify and Cloudflare join a header two rules set. A `_headers` rule matches the
+  address whatever answers it, so a missing name under `/_expo/static/` is a 404 marked
+  immutable there (the browser suite's host does the same); those hosts publish a deploy
+  whole. nginx and Apache, which a site is copied to file by file, answer one with no-cache
+  because the lifetime is chosen by the not-found page's address (`map $uri` after
+  `error_page 404`, the `<If>` on REQUEST_URI after `ErrorDocument 404`): measured on nginx
+  1.24 and Apache 2.4.58, and pinned by the website test. `_redirects` refuses the hosting
+  files with `404!`: Netlify applies a rule without the `!` only where no file exists, and
+  `e2e/serve.mjs` does the same. Cloudflare Pages takes no 404 rule and serves `.htaccess`
+  as a file (it holds the public headers and the server's origin).
+- The server's side is `API_HEADERS` in `apps/server/src/index.ts`, set by the outermost
+  middleware twice: on the context before the rest runs, because @hono/node-server builds a
+  HEAD's response from the GET one's original headers (set only afterwards, `curl -I` showed
+  none), and on the finished response for a Response a handler builds itself, which Hono
+  passes on without the context's headers. The account's mount answers that way (every
+  answer is a Response the kit builds), so there the second pass is what sends them, and the
+  server's `Cache-Control: no-store` and policy replace the kit's own (its `api/config` would
+  otherwise be cacheable for a minute); `index.test.ts` drives `apiHeaders` with handlers
+  that build their own and checks every kind of answer the server gives and the README,
+  `account.test.ts` and `http-headers.test.ts` check them over a real socket through the
+  adapter, and the browser suite checks the preflight, the site's calls and the account's.
+- `.well-known/security.txt` expires on 2027-10-08 and the website test fails once it has:
+  renew it, a year ahead at most. Its `Contact` is the issues page, because private
+  vulnerability reporting is switched off on the repository (SECURITY.md says to open an
+  issue with no details in it), and its `Policy` is SECURITY.md on `main`: the default
+  branch does not carry it yet, so `blob/HEAD` answered 404.
 
 ## Native configuration
 

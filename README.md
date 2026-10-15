@@ -6,7 +6,7 @@
 - a **YouTube video / Short**, **TikTok**, **Reel** → a link on the video's own platform, opened straight in that app, plus the creator's profile
 - anything you want to keep → **Save for later** in the app's library, mark as watched when you're done
 
-iOS and Android, built with Expo (React Native). Recognition runs on a small Node server you host yourself.
+iOS and Android, built with Expo (React Native), and the same app as a website. Recognition runs on a small Node server you host yourself. The website can also sign visitors in with Google and sell the accent packs through Stripe, off until you give the server the keys ([The website's account and shop](#the-websites-account-and-shop)).
 
 ```
 ┌──────────────────────┐   8 s clips (480p mp4)   ┌──────────────────────────────┐
@@ -77,8 +77,11 @@ Check it: `curl http://localhost:8787/health` →
 - Put TLS in front of it (a reverse proxy or your host's ingress). The app accepts only `http:` and `https:` server URLs, and it refuses to send your access token over `http:` to anything that is not a private-network address, so a public server needs HTTPS. A public `http:` address is warned about in Settings but not blocked, and Android permits the connection (its cleartext setting is all-or-nothing, and what a LAN server needs is a private IP literal, which Android's per-domain rules cannot express) while iOS refuses it — so on Android that configuration sends your clips and results in the clear. Use `https://` for anything off your own network.
 - The Docker build excludes `.env` files and your eval clips (`.dockerignore`), so neither is baked into an image layer. Pass secrets at run time instead, which is what `docker compose` does with `env_file`.
 - Decoding is bounded at both ends. What a clip claims about itself is read by one ffmpeg probe, and that probe is bounded before it runs: `MAX_STREAMS` caps how many decoders it may open at all, `PROBE_MEMORY_MB` caps the address space it may take, and it reads only the first 100 KB of the file instead of decoding frames from every stream to fill in what the container did not declare. That last one is the difference between 736 MB and 113 MB for a 1.4 MB upload carrying eight 8192x4608 streams. The pixel and duration budgets (`MAX_PIXELS`, `MAX_DURATION_SECONDS`) are then applied to what the probe reported — after that one bounded run and before any frame is extracted. Every ffmpeg run has a hard timeout, and the input is restricted to local files and to the container formats a phone records.
-- No CORS headers are sent unless `CORS_ORIGIN` is set. Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
-- Uploads are capped at 80 MB and rejected before they are buffered; clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
+- No CORS headers are sent unless `CORS_ORIGIN` is set, and then only for that one origin: the website's, when you run it (see [Run it as a website](#run-it-as-a-website)). Permissive ones would let any web page the user visits spend your Claude budget and read back what your household watched.
+- Every answer carries the headers of an API, whatever it is (a result, a refusal, a 404, an error): `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`. Nothing it sends is a page, so nothing may run, be framed, be sniffed into another type, be embedded by another site or be kept by a cache on the way; the bodies are per session, and one of them carries the session key. `Strict-Transport-Security` belongs to the TLS proxy in front of it, since a browser ignores it over the plain HTTP the server itself speaks.
+- The website's account and shop (`/api/`, below) answer without `APP_TOKEN`, ahead of that gate: Google sends the browser back to the sign-in by a navigation, Stripe posts its webhook from its own servers, and the page keeps the token in memory only, so none of them could carry it. They have their own authentication instead (a signed sign-in cookie and state, a session cookie and an `Origin` check on every write, Stripe's signature) and spend nothing of the Claude budget the token guards. With nothing configured, `/api/config` says so and every other path below `/api/` is a JSON 404. The request log prints no query string, because the sign-in's callback carries Google's one-time code in one.
+- A request whose path the server's URL parser would rewrite is answered `400` before anything routes it: a backslash (which the parser reads as a slash), a `.` or `..` segment, escaped or not, or a `#`. A proxy in front decides by the path as it reads it and passes the target on as the client wrote it, and nginx reads a backslash as an ordinary character, so `/api/..\..\sessions`, which the site's nginx hands on as part of `/api/`, is `/sessions` to the parser: before this refusal it opened sessions there, billed to whatever `X-Forwarded-For` the caller wrote. No browser and no build of the app sends such a path.
+- Uploads are capped at 80 MB and rejected before they are buffered. A clip is taken as `multipart/form-data` and nothing else (any other `Content-Type` is a 415), with at most 8 fields and at most 8 KB of headers opening each, checked before the form is parsed: parsed whole, an 80 MB body of nothing but tiny fields, header lines or urlencoded pairs held the server's event loop for 7 to 15 seconds and spent nothing a caller is limited by. Clips are deleted right after analysis; the Docker image runs as the unprivileged `node` user; internal error details stay in the server log when `NODE_ENV=production`.
 
 #### Server configuration
 
@@ -92,7 +95,7 @@ Check it: `curl http://localhost:8787/health` →
 | `MAX_CONCURRENT` | `3` | Clips analysed in parallel across all sessions; the rest queue. |
 | `DAILY_CLIP_LIMIT` | `0` (off) | Clips one caller may have analysed per day, counted against the connecting address. In-memory, so it resets on restart. |
 | `TRUST_PROXY` | `0` (off) | How many proxies of your own stand in front of the server; `true` means one. The caller's address is then the `X-Forwarded-For` hop that many from the right, which the client cannot forge. A hop your proxy wrote a port onto (`203.0.113.9:54321`, `[2001:db8::1]:443` — Azure does this) is understood; one that is not an address at all is counted in the shared bucket, and the server warns once when that happens. Only set it behind proxies you control. |
-| `CORS_ORIGIN` | – | Browser origin allowed to call the server. Unset means no CORS headers, which is right for the app. `*` is refused at startup: it would hand every page on the internet your Claude budget, and the cross-origin check would turn away every request the preflight had just allowed. |
+| `CORS_ORIGIN` | – | Browser origin allowed to call the server: the origin the website is served from (`https://watch.example.com`), when you run one. Unset means no CORS headers, which is right for the phone app. `*` is refused at startup: it would hand every page on the internet your Claude budget, and the cross-origin check would turn away every request the preflight had just allowed. |
 | `FFMPEG_TIMEOUT_MS` | `20000` | Hard limit on any single ffmpeg run. |
 | `MAX_PIXELS` | `9437184` | Largest frame the server will decode, and the most a clip's streams may total. Checked against what the probe read, so it bounds *extraction*; what bounds the probe is the row below and `PROBE_MEMORY_MB`. |
 | `MAX_STREAMS` | `8` | Streams one upload may declare — every stream, not only video. ffmpeg opens a decoder per stream while probing, so the count needs a bound that applies before the probe rather than after it. A phone records a video and an audio track plus a timecode or metadata track or two. |
@@ -115,6 +118,7 @@ Check it: `curl http://localhost:8787/health` →
 | `TMDB_API_KEY` | – | Optional TMDB key. Adds "where to watch" and a cast list to film and TV results. |
 | `WATCH_REGION` | `US` | Country for watch providers when the app sends none; the app sends the device's own. |
 | `FFMPEG_PATH` | auto | Explicit ffmpeg binary. |
+| `APP_URL`, `SESSION_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ACCENT_SUNSET`, `STRIPE_PRICE_ACCENT_FOREST`, `STRIPE_PRICE_ACCENT_MONO`, `KIT_DATA_DIR` | – | The website's account and shop, off until they are set: see [The website's account and shop](#the-websites-account-and-shop). The Docker image sets `KIT_DATA_DIR=/var/lib/tvsham/account`, on a volume of its own in `docker-compose.yml`. |
 
 #### API
 
@@ -122,9 +126,10 @@ Check it: `curl http://localhost:8787/health` →
 | --- | --- | --- | --- |
 | `GET` | `/health` | – | `HealthResponse` |
 | `POST` | `/sessions` | `{ "source": "camera" \| "screen" }` | `{ sessionId, sessionKey }` |
-| `POST` | `/sessions/:id/clips` | multipart, field `clip` (mp4/mov/webm) | `RecognitionResult` for *all* clips so far |
+| `POST` | `/sessions/:id/clips` | `multipart/form-data` (415 otherwise), field `clip` (mp4/mov/webm), at most 8 fields | `RecognitionResult` for *all* clips so far |
 | `GET` | `/sessions/:id` | – | last `RecognitionResult` |
 | `DELETE` | `/sessions/:id` | – | 204 |
+| any | `/api/…` | – | The website's account and shop (the shared kit's routes: `config`, `auth/google/start`, `auth/google/callback`, `auth/logout`, `me`, `checkout`, `portal`, `webhooks/stripe`); see below and `apps/server/kit/README.md` |
 
 Every call about an existing session carries `X-Session-Key: <sessionKey>`, the secret
 returned when it was created; without it the answer is `404`, the same as for an id that
@@ -136,6 +141,28 @@ with it.
 A clip upload answers `202` when that clip is already being analysed (a retry arriving while the original is in flight); the app then polls `GET /sessions/:id` until `analysing` turns false, instead of mistaking the mid-flight state for an answer.
 
 `RecognitionResult.status` is `listening` (send another clip), `identified`, `unsure` (best guess after the clip limit) or `failed`. See `packages/shared/src/index.ts` for the full shapes.
+
+#### The website's account and shop
+
+The server also carries what the website needs to sign a visitor in with Google and sell the three accent packs that do not ship with the app (Sunset, Forest and Mono; Midnight is everyone's) through Stripe Checkout. It is the shared kit in `apps/server/kit/` (copied byte for byte from the canonical copy, never edited here; its `README.md` is the full guide), mounted in the Hono server below `APP_URL`'s path and `api/`, with this app's catalogue in `apps/server/src/catalogue.ts` and the mount in `apps/server/src/account.ts`. The phone apps neither use nor show any of it: they keep every accent pack, as before, since the App Store and Google Play require their own in-app purchase for digital goods.
+
+It is **off until you set its variables**, and with none of them the website looks and behaves as before:
+
+| Variable | What it is |
+| --- | --- |
+| `APP_URL` | The website's public address with the trailing slash: `https://watch.example.com/`. Every address the account writes (Google's redirect, Checkout's return) comes from it, never from a request's headers. Its origin must be `CORS_ORIGIN`'s: the server refuses to start with sign-in on and the two apart, because the page's sign-out, Buy and Delete account carry the site's `Origin`, which the server refuses unless `CORS_ORIGIN` names it. |
+| `SESSION_SECRET` | 32 random bytes, base64url: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | A Google OAuth client of type *Web application* whose authorised redirect URI is `APP_URL` + `api/auth/google/callback`. |
+| `STRIPE_SECRET_KEY` | A restricted key: Checkout Sessions write, Prices read, Customer portal write, Customers write. `rk_test_…` first. |
+| `STRIPE_WEBHOOK_SECRET` | The signing secret of a webhook endpoint at `APP_URL` + `api/webhooks/stripe`, subscribed to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `charge.refunded`, `charge.dispute.created`, `customer.subscription.updated` and `customer.subscription.deleted`. |
+| `STRIPE_PRICE_ACCENT_SUNSET`, `STRIPE_PRICE_ACCENT_FOREST`, `STRIPE_PRICE_ACCENT_MONO` | The Stripe Price (one-time, fixed amount) of each pack; a pack without one is not sold, and stays as it was. |
+| `KIT_DATA_DIR` | Where the sessions and the purchases are kept, one file per record: a directory outside anything a web server publishes, written by this one server process alone. Without it sign-in and the shop stay off, and the server says so. |
+
+**On the site's own origin.** The sign-in is a cookie of the website's origin, so the page must reach `/api/` there, not at the recognition server's address. The website's reverse proxy sends it to the server: `apps/mobile/deploy/nginx.conf` does, in `location ^~ /api/` (to `127.0.0.1:8787`, where `docker-compose.yml` publishes the server; delete the block to serve a site with no account). The server answers more than the account there, so the location refuses a path with a backslash in it (`/api/..\..\health` is under `/api/` to nginx and `/health` to the server's URL parser) and appends the address it saw to `X-Forwarded-For`, the entry `TRUST_PROXY` reads; a location of your own needs both lines. Apache cannot proxy from a `.htaccess`: put `ProxyPass "/api/" "http://127.0.0.1:8787/api/"` (with `mod_proxy` and `mod_proxy_http`) in the virtual host. Netlify and Cloudflare Pages serve only the files here, so a site published there has no account and no shop: its page asks `api/config` once, gets the host's 404, and draws neither. The page calls the recognition routes at `TVSHAM_SERVER_URL` as before. Give the site an origin of its own (see below): every page on the origin can act as the signed-in visitor through `/api/`.
+
+**What it sells and keeps.** Buy sends the visitor to Stripe's own Checkout page, and only Stripe's signed webhook grants a pack, to the Google account (its id, never the email). On the website an accent on sale is drawn only once `GET /api/me` says it is owned, and Midnight until then; while the site's `api/` answers, what the browser stores unlocks nothing. When `api/config` does not answer as the kit does (no `api/` on the host, an outage, an answer that is not the kit's, or no answer within five seconds), the page has no shop for that visit and the accents follow the browser's settings, as on a host without one: every pack, by default. That gates a cosmetic: someone who edits the page can draw any accent, which is not worth protecting against. Signing in tells the site a Google account id and, when Google says it is verified, the email address, which is kept only with the session; the site keeps the account id, what was bought and Stripe's customer id. Delete account removes all of that (the payment stays with Stripe). The kit keeps its records in `KIT_DATA_DIR`, one process per directory; in Docker that is the `account` volume, so a purchase outlives the container.
+
+Owner's checklist: Google Cloud (consent screen, the Web client and its redirect URI), Stripe (the three Products and Prices, the webhook endpoint and its events, the restricted key; test mode first, card `4242 4242 4242 4242`), and the server's variables above with `CORS_ORIGIN` set to the site's origin. `apps/server/kit/README.md` has the details, and what it cannot cover: purchases in the phone apps, which need StoreKit and Play Billing.
 
 ### Run the app
 
@@ -158,7 +185,7 @@ Both modes take an optional one-line hint ("90s sitcom", "on Netflix"). Anything
 
 Dark by default, with a full light palette that follows the system or can be pinned in Settings, and four accent packs. While a clip is being taken, sonar rings pulse out of the capture button and the button breathes, so the wait reads as listening rather than hanging; corner brackets frame where to point. Results lead with a confidence ring (green, amber, red) instead of a bare percentage, over a poster backdrop blurred to fill the card. All animation is native-driven so the camera preview stays smooth.
 
-Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable; today every pack ships unlocked, and that field is where a cosmetics purchase would hook in.
+Colours live in one palette (`src/palette.ts`); screens build their styles through `makeStyles`, so both schemes and every accent stay consistent without per-screen overrides. `Settings.unlockedAccents` gates which packs are selectable, and every pack ships unlocked in it. On a website whose server sells the packs (see [The website's account and shop](#the-websites-account-and-shop)), a pack on sale is selectable and drawn only once the server says the signed-in visitor owns it, whatever that list says; a visit on which the site's `api/` does not answer has no shop, and the list decides, as it does on a phone.
 
 #### When the server is out of reach
 
@@ -168,6 +195,53 @@ A clip that cannot be uploaded is kept rather than lost: it is moved out of the 
 
 The result screen shows what it found, how sure it is, the evidence, and the links: Wikipedia opens in an in‑app browser, YouTube links open in the YouTube app when installed. *Save for later* stores the result on the device (no account needed). The *Saved* screen lists saved items (open, mark watched, remove) and a *Recent* section with the last 30 identifications, so a result you dismissed can still be opened or saved.
 
+### Run it as a website
+
+The app is a website too: the same screens, built for the browser by `expo export --platform web`, talking to the same server. Everything the phone app does on the phone, the page does in the browser; the server does what it always did. The browser cannot record from the camera, so there the camera tab says so and leads to the picker: choose a video saved on the device, such as a screen recording or the TV filmed with the camera app.
+
+```bash
+TVSHAM_SERVER_URL=https://tvsham.example.com npm run build:web --workspace apps/mobile   # writes apps/mobile/dist
+```
+
+- `TVSHAM_SERVER_URL` is the recognition server the site talks to. The build writes its origin into the site's Content-Security-Policy as the only address the page may call, and makes it the app's server address; Settings shows it and cannot change it, because the browser would refuse any other. Without it the build stops: a site with no server can identify nothing.
+- `WEB_BASE_URL` (optional) is the path when the site is not at the root of its origin: `/tvsham` for `example.com/tvsham/`. The host configs below are written for a site at the root; under a path, add the prefix to the paths in them.
+- On the server, set `CORS_ORIGIN` to the origin the site is served from, and set `APP_TOKEN`. The server answers the site's preflight for that origin and refuses every other.
+- The account and the shop, when the server has them on, are at the site's own `/api/`, which the site's reverse proxy sends to the server ([The website's account and shop](#the-websites-account-and-shop)). Where nothing answers there, the page draws neither.
+- Serve both over HTTPS. A page served over HTTPS cannot call an `http:` server (the browser blocks it as mixed content), and the policy upgrades the page's own requests to HTTPS. So the build refuses an `http:` server address unless it is on the same machine (`127.0.0.1`, `localhost`, `[::1]`, a `.localhost` name), the one place a browser leaves plain http alone.
+
+Publish `apps/mobile/dist`, the build's output, and never the repository: `.git/` holds its whole history. The output is the page, the bundle and its assets (content-hashed names), `404.html`, `site.css`, `guard.js`, `favicon.ico`, `robots.txt`, `.well-known/security.txt`, and the config file for each host (`_headers` and `_redirects` for Netlify and Cloudflare Pages, `.htaccess` for Apache; each host ignores the others'). Netlify, Apache and nginx refuse to serve all three. Cloudflare Pages does not serve `_headers` or `_redirects` but takes no 404 rule, so there `.htaccess` is served as a plain file: it holds the site's public headers and the server's origin, nothing secret. For nginx, copy `apps/mobile/deploy/nginx.conf` into the server's configuration and put the server's origin where it says `TVSHAM_SERVER_ORIGIN`. Each config redirects HTTP to HTTPS where it can, serves the app's routes (`/settings`, `/library`, `/result`) as the one page, refuses dotfiles (but `/.well-known/`) and the hosting files, lists no folders, and answers everything else with `404.html` and a 404.
+
+**Response headers.** The same set is in `_headers`, `.htaccess` and `deploy/nginx.conf`, and the build also writes the policy into the built `index.html` as a `<meta>` tag (without `frame-ancestors`, which a meta tag cannot carry) for a host that sends no headers of its own. `apps/mobile/public/index.html` itself carries no policy, so `npm run mobile` can serve it to a browser for development. `apps/mobile/src/website.test.ts` fails when they differ, and the browser suite loads the site under them.
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' https://upload.wikimedia.org https://i.ytimg.com https://image.tmdb.org; media-src blob:; connect-src 'self' TVSHAM_SERVER_ORIGIN; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types 'none'` | Only the site's own script runs, nothing inline and no eval; Trusted Types turn any string-to-HTML sink into an error. The style hash is that of the empty string: react-native-web adds an empty `<style>` and fills it through the CSSOM, and this admits that and no inline style with anything in it. Pictures come from the three hosts the server's results point to (Wikipedia, YouTube, TMDB); the picker reads a chosen video's length through a `blob:` address; the page calls the one server it was built for, and its own `api/` (`'self'`: the account and the shop, which the server answers through the site's proxy; Google and Stripe are pages the browser navigates to, which the policy does not govern). Measured in Chromium against a real server by the browser suite, not copied. |
+| `X-Content-Type-Options` | `nosniff` | Files are what their type says. |
+| `X-Frame-Options` | `DENY` | With `frame-ancestors 'none'`: no other site can frame the app and steer its buttons. |
+| `Referrer-Policy` | `no-referrer` | The site is one household's front end to its own server; the pages it links to need not learn its address. |
+| `Permissions-Policy` | `accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()` | In a browser the app records nothing, reads no sensor and plays nothing, so every feature is off. |
+| `Cross-Origin-Opener-Policy` | `same-origin` | A page the app opens cannot reach back into it. |
+| `Cross-Origin-Resource-Policy` | `same-origin` | No other site can embed the site's files. |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | Browsers remember to use HTTPS. |
+| `Cache-Control` | `public, max-age=31536000, immutable` for `/_expo/static/` and `/assets/`; `no-cache` for everything else | The bundle and assets carry a content hash in their names, so a new build has new names; the page and everything named without a version is revalidated on every load, so a deploy never mixes one build's page with another's scripts. |
+
+**Give it an origin of its own.** The site keeps the library, the recent list and the preferences in the browser's `localStorage` under `tvsham.*` keys, and storage is per origin. On an origin shared with other apps (a GitHub Pages project site, `user.github.io/tvsham/`) every other app published there can read and overwrite them, and a script injected into any of them reaches them all. A domain or subdomain of its own avoids that. GitHub Pages also cannot send headers: there only the `<meta>` policy applies (no `frame-ancestors`, `X-Frame-Options`, `Permissions-Policy`, COOP, CORP or HSTS) and a reload at a route answers 404, so use a host that can (Netlify, Cloudflare Pages, Apache or nginx).
+
+**What the browser does differently.** It does not record from the camera (the camera tab says so). It keeps no clip for later when the server is out of reach: the error says so, and the video is still on the device to choose again. It never stores the access token: there is no keychain in a browser and `localStorage` is readable by every script on the origin, so the token lives in memory while the tab is open and is typed again after a reload, as Settings says beside the field. Vibration works where the browser can vibrate. If the bundle fails to load, or the browser is too old for it, `guard.js` (loaded first, a file of its own since nothing inline runs) shows a short note instead of an empty page; without JavaScript, the page says it needs it.
+
+**Launch checklist**, with `SITE` the site's address:
+
+```sh
+curl -sI http://SITE/ | head -1               # a 301 to https
+curl -sI https://SITE/ | grep -i -E 'content-security|strict-transport|nosniff|referrer|permissions|cache-control'
+curl -sI https://SITE/settings | head -1      # 200: a route of the app
+curl -sI https://SITE/.git/HEAD | head -1     # 404
+curl -sI https://SITE/_headers | head -1      # 404
+curl -sI https://SITE/nonexistent | head -1   # 404
+```
+
+Then open the site, Test connection in Settings, choose a video, and check that the browser console shows no Content Security Policy lines. Security problems are reported as `SECURITY.md` and `/.well-known/security.txt` say; that file expires on 8 October 2027 and the unit tests fail once it has, so renew it before then.
+
 ## Development
 
 ```bash
@@ -176,21 +250,50 @@ npm run typecheck         # all workspaces
 npm test                  # unit tests in both workspaces
 npm run test:conventions  # the shared repository conventions (CONVENTIONS.md)
 npm run check             # all of the above: the gate before a push
+npm run test:e2e          # the api/ proxy in nginx, then the website in Chromium: builds it, serves it, drives it
+npm run test:all          # npm test, then the browser suite
 ```
 
 The server tests cover the ffmpeg pipeline, link resolution, TMDB enrichment, the
 recogniser's control flow against a fake client, and the HTTP routes. The app tests cover
 the pure layer: the record-and-upload loop against injected fakes, settings validation,
 result formatting, the offline-queue drop policy, and a contrast audit that holds every text pairing in both schemes and all four accents to
-WCAG AA.
+WCAG AA, and the website's hosting files: one policy in every place it is written, a cache
+lifetime for every file, every route served on every host, and the refusals.
 
-CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test and a Metro bundle of the app, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
+Before it, `apps/mobile/e2e/proxy.mjs` runs `deploy/nginx.conf` in the nginx installed where it
+runs (only its ports, certificate lines, `http2 on;`, root and upstream changed), and the static
+host the browser suite uses, in front of a recorder, and sends both the same raw requests: a
+path with a backslash must reach nothing, and the rightmost `X-Forwarded-For` entry the server
+receives must be the connecting address, whatever the caller wrote. Where nginx is missing it says
+so and passes, unless `CI` is set.
+
+The browser suite (`apps/mobile/e2e/web.mjs`, Playwright and Chromium) builds the website for a
+real server it starts beside it, with Claude, Wikipedia, YouTube and TMDB stood in for, serves
+the build at a sub-path with the headers exactly as `_headers` writes them, and drives the main
+flow: open the site, test the connection with a token, choose a video, read the answer and its
+pictures, save it, find it again after a reload. It fails on any policy violation, console
+error, page error or request that leaves the site, then checks the 404 page, the refusals, the
+safety net and the page without JavaScript. With the server's account on, it signs in with Google, buys an accent, posts
+Stripe's signed webhook, sees the accent drawn, signs out and deletes the account, Google's and
+Stripe's pages answered by the suite; and on a host with nothing at `api/` it checks the page
+asks once and draws neither. The server's tests run the kit's own self-test first
+(`apps/server/kit/selftest.mjs`), then the account through the Hono app over a real socket with a
+fake Google and a fake Stripe (`apps/server/src/account.test.ts`).
+
+CI (`.github/workflows/ci.yml`) runs the lint, the typecheck, the tests, the conventions test, a Metro bundle of the app for Android and the web and the browser suite, `npm audit --omit=dev --audit-level=high` against the lockfile in a job of its own, and a Docker build of the server in a third.
 
 ## Project layout
 
 ```
-apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker)
+apps/mobile      Expo app (expo-router, expo-camera, expo-image-picker), also built as the website:
+  public/        the page template, safety net, 404 page and host configs, copied into the site
+  deploy/        nginx.conf, copied into a server's configuration by hand
+  scripts/       build-web.mjs builds the site; make-icons.mjs draws the icons
+  e2e/           the browser suite, the static host it serves the site through, and the api/ proxy check
 apps/server      Node 22 + Hono server (ffmpeg, @anthropic-ai/sdk)
+  kit/           the shared sign-in, shop and webhook kit, byte for byte; mounted below /api/
+  src/account.ts the kit in this server; src/catalogue.ts what it sells; src/testing/ the fakes
 packages/shared  Types shared by both (Identification, RecognitionResult, ...)
 ```
 
@@ -208,7 +311,7 @@ Everything below needs a device build or an outside relationship to do properly,
 **Needs something outside the code**
 
 - **Affiliate revenue.** TMDB's terms only permit linking to their own watch page, which is what the app does. Per-click revenue would mean a direct relationship with each streaming or rental service.
-- **Purchases.** The pieces a store would attach to already exist: `Settings.unlockedAccents` gates the accent packs, and `DAILY_CLIP_LIMIT` enforces a per-device ceiling server-side. What is missing is receipt validation, which needs a real store account. Two things worth not building: ads on the result screen, which would spoil the one moment the app exists for, and paywalling an answer after the clip was recorded, which reads as a ransom.
+- **Purchases in the phone apps.** The website sells the accent packs through Stripe (above). In the apps, the pieces a store would attach to already exist: `Settings.unlockedAccents` gates the accent packs, and `DAILY_CLIP_LIMIT` enforces a per-device ceiling server-side. What is missing is StoreKit and Play Billing and their receipt validation, which need real store accounts. Two things worth not building: ads on the result screen, which would spoil the one moment the app exists for, and paywalling an answer after the clip was recorded, which reads as a ransom.
 - **Sync and export.** A cloud watchlist, or one-tap export to Trakt, Letterboxd or Notion. The library is device-only today and each export target is its own OAuth integration.
 
 **Open questions**

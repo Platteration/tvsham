@@ -17,8 +17,8 @@ module.exports = [
     },
   },
   {
-    // Build scripts and config plugins run in Node, not in the app.
-    files: ["scripts/**/*.mjs", "scripts/**/*.js", "plugins/**/*.js"],
+    // Build scripts, config plugins and the browser suite's driver run in Node, not in the app.
+    files: ["scripts/**/*.mjs", "scripts/**/*.js", "plugins/**/*.js", "e2e/**/*.mjs"],
     languageOptions: {
       globals: {
         Buffer: "readonly",
@@ -29,5 +29,12 @@ module.exports = [
         __dirname: "readonly",
       },
     },
+  },
+  {
+    // The website's safety net runs before the bundle, in whatever browser loaded the page,
+    // so it is written for the oldest one it has to talk to: var, no arrow functions.
+    files: ["public/**/*.js"],
+    languageOptions: { sourceType: "script" },
+    rules: { "no-var": "off" },
   },
 ];

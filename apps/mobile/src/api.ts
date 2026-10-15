@@ -6,10 +6,13 @@ import {
   type SessionHandle,
 } from "@tvsham/shared";
 import { getLocales } from "expo-localization";
+import { Platform } from "react-native";
+import { nativeClipPart, postClipForm, type Answer } from "./clip-upload";
 import { TimeoutError, withDeadline } from "./deadline";
 import { canSendTokenTo } from "./settings";
 import { cleanRecognitionResult, cleanSessionHandle } from "./shapes";
 import { getDeviceId, getSettings } from "./store";
+import { clipFileFor, clipFileName } from "./web-clips";
 
 export class ApiError extends Error {
   constructor(
@@ -54,7 +57,7 @@ function errorText(body: unknown): string | null {
   return null;
 }
 
-async function parse<T>(res: Response): Promise<T> {
+async function parse<T>(res: Answer): Promise<T> {
   const text = await res.text();
   let body: unknown = null;
   try {
@@ -130,28 +133,33 @@ function sessionHeaders(
 }
 
 /**
- * Upload one recorded clip. React Native's fetch accepts `{ uri, name, type }`
- * objects in FormData and streams the file from disk.
+ * Upload one recorded clip. On a phone the part is the file by its address,
+ * `{ uri, name, type }`, sent through React Native's XMLHttpRequest, which
+ * streams it from disk: SDK 57's global fetch cannot send that part at all
+ * (clip-upload.ts). In a browser the part is the picked File itself, held in
+ * web-clips.ts under the address it was picked as, and the browser's fetch sends it.
  */
 export async function uploadClip(
   session: SessionHandle,
   fileUri: string,
   opts: { mimeType?: string; signal?: AbortSignal; clipKey?: string } = {},
 ): Promise<RecognitionResult> {
-  const name = fileUri.split("/").pop() || "clip.mp4";
-  const type = opts.mimeType ?? (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4");
+  const picked = Platform.OS === "web" ? clipFileFor(fileUri) : undefined;
+  if (Platform.OS === "web" && !picked) throw new ApiError("That video is no longer open in this page. Choose it again.");
+  const name = picked ? clipFileName(picked, "clip.mp4") : fileUri.split("/").pop() || "clip.mp4";
+  const type = opts.mimeType ?? (picked?.type || (name.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4"));
   // Sent as a header as well as a field so the server can recognise a retry of a
   // clip it already analysed before it buffers the body again.
   const clipKey = (opts.clipKey ?? fileUri).replace(/[^A-Za-z0-9:_-]/g, "").slice(-128) || "clip";
   const base = baseUrl();
   const send = async () => {
     const form = new FormData();
+    if (picked) form.append("clip", picked, name);
     // @ts-expect-error React Native FormData accepts file descriptors, the DOM types do not.
-    form.append("clip", { uri: fileUri, name, type });
+    else form.append("clip", nativeClipPart(fileUri, name, type));
     form.append("clipKey", clipKey);
     const res = await withDeadline(TIMEOUTS.upload, "Sending the clip", opts.signal, (signal) =>
-      fetch(`${base}/sessions/${session.sessionId}/clips`, {
-        method: "POST",
+      postClipForm(Platform.OS === "web", `${base}/sessions/${session.sessionId}/clips`, {
         headers: sessionHeaders(base, session, { "X-Clip-Key": clipKey }),
         body: form,
         signal,
